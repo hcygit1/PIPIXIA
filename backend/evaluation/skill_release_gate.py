@@ -12,6 +12,9 @@ class VariantMetrics:
     pass_rate: float
     avg_tokens: float = 0.0
     external_failures: int = 0
+    avg_duration_ms: float = 0.0
+    avg_tool_calls: float = 0.0
+    stability_sample_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -20,11 +23,8 @@ class ReleaseDecision:
     reasons: tuple[str, ...]
 
 
-def static_skill_check(skill_path: Path) -> tuple[bool, tuple[str, ...]]:
-    """Validate the deterministic parts of a candidate before running agents."""
-    if not skill_path.is_file():
-        return False, (f"missing Skill file: {skill_path}",)
-    content = skill_path.read_text(encoding="utf-8", errors="replace")
+def static_skill_content_check(content: str) -> tuple[bool, tuple[str, ...]]:
+    """Validate deterministic Skill structure without requiring a file."""
     reasons: list[str] = []
     if len(content.strip()) < 50:
         reasons.append("Skill content is too short")
@@ -37,11 +37,20 @@ def static_skill_check(skill_path: Path) -> tuple[bool, tuple[str, ...]]:
     return not reasons, tuple(reasons)
 
 
+def static_skill_check(skill_path: Path) -> tuple[bool, tuple[str, ...]]:
+    """Validate the deterministic parts of a candidate before running agents."""
+    if not skill_path.is_file():
+        return False, (f"missing Skill file: {skill_path}",)
+    return static_skill_content_check(
+        skill_path.read_text(encoding="utf-8", errors="replace")
+    )
+
+
 def evaluate_release_gate(
     *,
     static_check_passed: bool,
     validation: Mapping[str, VariantMetrics],
-    regression_candidate_passed: bool,
+    regression_candidate_passed: bool | None,
     max_token_increase_ratio: float = 0.5,
 ) -> ReleaseDecision:
     """Accept only candidates that improve the baseline without regressing active."""
@@ -58,6 +67,8 @@ def evaluate_release_gate(
         return ReleaseDecision("rejected", ("candidate did not outperform without_skill",))
     if active is not None and candidate.pass_rate < active.pass_rate:
         return ReleaseDecision("rejected", ("candidate regressed against active_skill",))
+    if regression_candidate_passed is None:
+        return ReleaseDecision("pending_regression", ("regression evaluation has not run",))
     if not regression_candidate_passed:
         return ReleaseDecision("rejected", ("candidate failed regression cases",))
     reference_tokens = active.avg_tokens if active is not None else baseline.avg_tokens

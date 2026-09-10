@@ -321,19 +321,42 @@ class MemSkillEvolver:
         except Exception as error:
             logger.error("Candidate Skill generation failed: %s", error)
             return None
-        if not content or len(content.strip()) < 50:
+        if not content or not content.strip():
             return None
+        # Offline candidates get two format-only repair attempts before the
+        # evolution attempt is abandoned. Security failures are never repaired.
+        from evaluation.skill_candidate import repair_candidate_content
+
+        content, static_check, repair_attempts = await repair_candidate_content(
+            content, llm_call=self._llm_call, max_attempts=2,
+        )
         name = eval_result.suggested_name or f"skill-{uuid.uuid4().hex[:8]}"
         description = _extract_description(content) or (task.summary or "")[:200]
-        quality_score = await self._score_quality(content, task)
+        if static_check.blocking_reasons:
+            logger.warning(
+                "Unsafe Candidate Skill '%s' discarded: %s",
+                name, "; ".join(static_check.blocking_reasons),
+            )
+            return None
         store = SkillVersionStore(
             evolution_root=Path(self.skill_store_dir).parent / "skill_evolution",
             active_root=Path(self.skill_store_dir),
         )
         candidate = store.create_candidate(
             skill_id=name, content=content, source=source,
-            reason=eval_result.reason or "offline candidate",
+            reason=(
+                f"{eval_result.reason or 'offline candidate'}; "
+                f"static_repair_attempts={repair_attempts}"
+            ),
         )
+        if not static_check.passed:
+            store.set_candidate_status(candidate, "abandoned")
+            logger.warning(
+                "Candidate Skill '%s' abandoned after static checks: %s",
+                name, "; ".join(static_check.reasons),
+            )
+            return None
+        quality_score = await self._score_quality(content, task)
         return build_new_skill(
             skill_id=str(uuid.uuid4()), name=name, description=description,
             skill_dir=str(store.candidate_dir(name, candidate.version)), task=task,

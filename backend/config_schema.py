@@ -460,8 +460,6 @@ class MemTaskConfig(BaseModel):
 
 class MemSkillEvolutionConfig(BaseModel):
     enabled: bool = True
-    # Online tasks must not generate or modify skills. Offline runners opt in.
-    auto_evaluate: bool = False
     min_chunks_for_eval: int = 6
     min_confidence: float = 0.7
     auto_install: bool = False

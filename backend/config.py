@@ -249,7 +249,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
         "skill_evolution": {
             "enabled": True,
-            "auto_evaluate": False,
             "min_chunks_for_eval": 6,
             "min_confidence": 0.7,
             "auto_install": False,

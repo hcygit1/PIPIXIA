@@ -68,7 +68,7 @@ class SkillVersionStore:
         return candidate
 
     def set_candidate_status(self, candidate: SkillVersion, status: str) -> SkillVersion:
-        if status not in {"accepted", "rejected", "needs_eval_fix", "external_failure"}:
+        if status not in {"accepted", "rejected", "needs_eval_fix", "external_failure", "pending_regression", "abandoned"}:
             raise ValueError(f"unsupported candidate status: {status}")
         updated = SkillVersion(**{**asdict(candidate), "status": status})
         self._write_metadata(

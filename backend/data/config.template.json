@@ -224,7 +224,6 @@
     },
     "skill_evolution": {
       "enabled": true,
-      "auto_evaluate": false,
       "min_chunks_for_eval": 6,
       "min_confidence": 0.7,
       "auto_install": false
