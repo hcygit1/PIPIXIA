@@ -14,6 +14,12 @@ class LangfuseIntegrationTests(unittest.TestCase):
             session_id="session-1",
             provider="openai",
             model="gpt-test",
+            observability_metadata={
+                "skill_names": ["检索增强"],
+                "skill_versions": {"检索增强": "2"},
+                "skill_count": 1,
+                "task_family": "知识问答",
+            },
         )
 
     def test_missing_credentials_keeps_agent_config_without_callbacks(self) -> None:
@@ -25,7 +31,26 @@ class LangfuseIntegrationTests(unittest.TestCase):
         self.assertNotIn("callbacks", config)
         self.assertEqual(config["metadata"]["pipixia_run_id"], "run-1")
         self.assertEqual(config["metadata"]["langfuse_session_id"], "session-1")
+        self.assertEqual(config["metadata"]["skill_names"], ["检索增强"])
+        self.assertEqual(config["metadata"]["skill_versions"], {"检索增强": "2"})
+        self.assertEqual(config["metadata"]["task_family"], "知识问答")
         self.assertEqual(config["run_name"], "pipixia-agent-turn")
+
+    def test_empty_business_metadata_is_omitted(self) -> None:
+        from runtime.langfuse_integration import build_langfuse_config
+
+        request = SimpleNamespace(
+            agent_id="main",
+            session_id="session-1",
+            provider="openai",
+            model="gpt-test",
+            observability_metadata={"task_family": "", "failure_type": None},
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            config = build_langfuse_config(request=request, run_id="run-empty")
+
+        self.assertNotIn("task_family", config["metadata"])
+        self.assertNotIn("failure_type", config["metadata"])
 
     def test_langfuse_handler_is_added_when_credentials_exist(self) -> None:
         from runtime.langfuse_integration import build_langfuse_config

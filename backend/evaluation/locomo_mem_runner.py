@@ -821,7 +821,7 @@ def main() -> None:
     parser.add_argument("--all-questions", action="store_true")
     parser.add_argument("--structured-summary", action="store_true", help="Generate structured Task summaries with an LLM")
     parser.add_argument("--summary-base-url", default=os.getenv("PIPIXIA_LLM_BASE_URL", ""))
-    parser.add_argument("--summary-api-key", default=os.getenv("PIPIXIA_LLM_API_KEY", ""))
+    parser.add_argument("--summary-api-key", default=os.getenv("OPENAI_API_KEY", ""))
     parser.add_argument("--summary-model", default=os.getenv("PIPIXIA_LLM_MODEL", "gpt-4o-mini"))
     parser.add_argument("--summary-cache", type=Path)
     parser.add_argument("--json-out", type=Path)

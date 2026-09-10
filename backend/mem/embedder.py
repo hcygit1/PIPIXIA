@@ -130,6 +130,7 @@ class MemEmbedder:
         body: dict[str, Any] = {
             "model": self.model,
             "input": texts[0] if len(texts) == 1 else texts,
+            "dimensions": self.dimensions,
         }
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
