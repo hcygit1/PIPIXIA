@@ -26,6 +26,8 @@ class MemorySchema:
                 kind         TEXT NOT NULL DEFAULT 'paragraph',
                 summary      TEXT NOT NULL DEFAULT '',
                 task_id      TEXT,
+                parent_task_id TEXT,
+                source_type  TEXT NOT NULL DEFAULT 'main_agent',
                 skill_id     TEXT,
                 owner        TEXT NOT NULL DEFAULT 'agent:main',
                 content_hash TEXT NOT NULL DEFAULT '',
@@ -70,6 +72,30 @@ class MemorySchema:
             CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_key);
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
             CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner);
+
+            -- Semantic task-boundary decisions requiring human confirmation.
+            CREATE TABLE IF NOT EXISTS boundary_reviews (
+                id              TEXT PRIMARY KEY,
+                session_key     TEXT NOT NULL,
+                owner           TEXT NOT NULL DEFAULT 'agent:main',
+                current_task_id TEXT NOT NULL,
+                turn_id         TEXT NOT NULL,
+                confidence      REAL NOT NULL DEFAULT 0,
+                reason          TEXT NOT NULL DEFAULT '',
+                retry_count     INTEGER NOT NULL DEFAULT 0,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                resolution      TEXT NOT NULL DEFAULT '',
+                target_task_id  TEXT,
+                note            TEXT NOT NULL DEFAULT '',
+                created_at      INTEGER NOT NULL,
+                updated_at      INTEGER NOT NULL,
+                resolved_at     INTEGER,
+                UNIQUE(owner, session_key, turn_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_boundary_reviews_status
+                ON boundary_reviews(owner, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_boundary_reviews_session
+                ON boundary_reviews(owner, session_key, status);
 
             -- Skills
             CREATE TABLE IF NOT EXISTS skills (
@@ -152,6 +178,8 @@ class MemorySchema:
             "summary_source": "ALTER TABLE chunks ADD COLUMN summary_source TEXT NOT NULL DEFAULT 'llm'",
             "embedding_status": "ALTER TABLE chunks ADD COLUMN embedding_status TEXT NOT NULL DEFAULT 'ok'",
             "embedding_error": "ALTER TABLE chunks ADD COLUMN embedding_error TEXT",
+            "parent_task_id": "ALTER TABLE chunks ADD COLUMN parent_task_id TEXT",
+            "source_type": "ALTER TABLE chunks ADD COLUMN source_type TEXT NOT NULL DEFAULT 'main_agent'",
         }
         for name, statement in additions.items():
             if name not in columns:

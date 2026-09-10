@@ -60,10 +60,8 @@ export async function finalizeChatTurn({
   runtime.userStopped = false;
 
   if (!streamState.doneReceived) {
-    // A client-side timeout can race with the backend: the SSE request ends,
-    // while the backend still finishes the turn and persists its final
-    // assistant/tool result. Reload on terminal errors so the UI converges to
-    // that durable result instead of keeping a stale "Request timeout" card.
+    // The SSE connection can end while the backend is persisting its final
+    // assistant/tool result. Reload so the UI converges to that durable result.
     if (!stoppedByUser && sessionId) {
       try {
         await loadMessages(agentId, sessionId);

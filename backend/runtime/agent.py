@@ -219,6 +219,9 @@ class AgentManager(
         agent_id: str = "main",
         prompt_mode: str = "full",
         persist_input_role: str = "user",
+        parent_task_id: str | None = None,
+        extra_system_prompt: str | None = None,
+        evaluation_mode: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._turn_service.stream(
             message,
@@ -226,6 +229,9 @@ class AgentManager(
             agent_id=agent_id,
             prompt_mode=prompt_mode,
             persist_input_role=persist_input_role,
+            parent_task_id=parent_task_id,
+            extra_system_prompt=extra_system_prompt,
+            evaluation_mode=evaluation_mode,
         ):
             yield event
 

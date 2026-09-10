@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Awaitable, Callable
 
 from runtime.turn_models import TurnExecutionRequest
+from tools.skills_scanner import scan_skills_detailed
 
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,9 @@ class TurnService:
         agent_id: str = "main",
         prompt_mode: str = "full",
         persist_input_role: str = "user",
+        parent_task_id: str | None = None,
+        extra_system_prompt: str | None = None,
+        evaluation_mode: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
         ports = self._ports
         state = ports.get_state(agent_id)
@@ -154,6 +158,8 @@ class TurnService:
                 "\n\n## 当前运行模型\n\n"
                 f"当前运行模型：`{model_override}`。"
             )
+        if extra_system_prompt:
+            extra_prompt += f"\n\n{extra_system_prompt}"
 
         available_tool_names = list(
             ports.get_tool_names(agent_id)
@@ -174,12 +180,37 @@ class TurnService:
             session_id=session_id,
         )
         history = context.pruned_history
-        tools = ports.build_tools(agent_id, session_id)
+        tools = [] if evaluation_mode else ports.build_tools(agent_id, session_id)
         budget = ports.resolve_budget(agent_id)
         recursion_limit = ports.resolve_agent_config(
             agent_id
         ).get("recursion_limit", 50)
         candidates = ports.resolve_candidates(agent_id)
+        try:
+            enabled_skills = [
+                skill
+                for skill in scan_skills_detailed(agent_id)
+                if skill.get("enabled", True)
+            ]
+            observability_metadata = {
+                "skill_names": [str(skill["name"]) for skill in enabled_skills],
+                "skill_versions": {
+                    str(skill["name"]): str(skill.get("version", "1.0"))
+                    for skill in enabled_skills
+                },
+                "skill_count": len(enabled_skills),
+            }
+        except Exception as error:
+            logger.warning("Unable to collect Skill metadata: %s", error)
+            observability_metadata = {}
+        if parent_task_id:
+            observability_metadata.update({
+                "task_id": parent_task_id,
+                "parent_task_id": parent_task_id,
+                "source_type": "subagent",
+            })
+        else:
+            observability_metadata["source_type"] = "main_agent"
 
         async def run_for_model(
             provider: str,
@@ -193,6 +224,7 @@ class TurnService:
                 model=model,
                 message=message,
                 persist_input_role=persist_input_role,
+                parent_task_id=parent_task_id,
                 system_prompt=system_prompt,
                 tools=tools,
                 history=history,
@@ -201,6 +233,8 @@ class TurnService:
                 summary_tokens=context.summary_tokens,
                 history_tokens=context.history_tokens,
                 active_tokens=budget.active_tokens,
+                observability_metadata=observability_metadata,
+                evaluation_mode=evaluation_mode,
             )
             async for event in ports.execute_turn(request):
                 yield event

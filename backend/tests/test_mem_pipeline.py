@@ -16,6 +16,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from mem.skill_evolver import MemSkillEvolver
+from mem.models import BoundaryReview
 from mem.store import Chunk, SearchHit, Skill, SkillSearchHit, Task
 from mem.task_processor import MemTaskProcessor
 from mem.worker import IngestMessage, MemWorker
@@ -34,6 +35,7 @@ class _FakeStoreForTaskProcessor:
         self.tasks: dict[str, Task] = {}
         self.chunks: dict[str, Chunk] = {}
         self.unassigned: list[Chunk] = []
+        self.boundary_reviews: dict[str, BoundaryReview] = {}
 
     def insert_task(self, task: Task) -> None:
         self.tasks[task.id] = task
@@ -83,6 +85,66 @@ class _FakeStoreForTaskProcessor:
         for chunk_id in chunk_ids:
             self.chunks[chunk_id].task_id = task_id
         self.unassigned = [c for c in self.unassigned if c.id not in set(chunk_ids)]
+
+    def get_pending_boundary_review(
+        self, session_key: str, owner: str,
+    ) -> BoundaryReview | None:
+        return next((
+            review for review in self.boundary_reviews.values()
+            if review.session_key == session_key
+            and review.owner == owner
+            and review.status == "pending"
+        ), None)
+
+    def create_boundary_review(self, review: BoundaryReview) -> BoundaryReview:
+        existing = next((
+            item for item in self.boundary_reviews.values()
+            if item.owner == review.owner
+            and item.session_key == review.session_key
+            and item.turn_id == review.turn_id
+        ), None)
+        if existing:
+            return existing
+        self.boundary_reviews[review.id] = review
+        return review
+
+    def get_boundary_review(self, review_id: str) -> BoundaryReview | None:
+        return self.boundary_reviews.get(review_id)
+
+    def resolve_boundary_review(
+        self, review_id: str, *, resolution: str,
+        target_task_id: str | None = None, note: str = "",
+    ) -> BoundaryReview | None:
+        review = self.boundary_reviews.get(review_id)
+        if review and review.status == "pending":
+            review.status = "resolved"
+            review.resolution = resolution
+            review.target_task_id = target_task_id
+            review.note = note
+        return review
+
+    def get_chunks_by_turn(self, session_key: str, turn_id: str) -> list[Chunk]:
+        return [
+            chunk for chunk in self.chunks.values()
+            if chunk.session_key == session_key and chunk.turn_id == turn_id
+            and chunk.dedup_status == "active"
+        ]
+
+    def get_task(self, task_id: str) -> Task | None:
+        return self.tasks.get(task_id)
+
+    def get_active_task_by_session(
+        self, session_key: str, owner: str = "agent:main",
+    ) -> Task | None:
+        return next((
+            task for task in reversed(list(self.tasks.values()))
+            if task.session_key == session_key
+            and task.owner == owner
+            and task.status == "active"
+        ), None)
+
+    def upsert_task_embedding(self, task_id: str, vec: list[float]) -> None:
+        pass
 
 
 class _FakeStoreForWorker:
@@ -295,6 +357,58 @@ class MemPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(chunk.task_id)
         self.assertEqual(chunk.dedup_reason, "task_skipped")
 
+    async def test_subagent_chunks_do_not_create_or_finalize_independent_task(self) -> None:
+        store = _FakeStoreForTaskProcessor()
+        parent = Task(
+            id="task-main",
+            session_key="main-session",
+            owner="main",
+            status="active",
+        )
+        store.insert_task(parent)
+        store.insert_chunk(
+            Chunk(
+                id="child-user",
+                session_key="child-session",
+                turn_id="child-turn",
+                seq=0,
+                role="user",
+                content="检查子任务",
+                task_id="task-main",
+                parent_task_id="task-main",
+                source_type="subagent",
+                owner="worker",
+            )
+        )
+        store.insert_chunk(
+            Chunk(
+                id="child-asst",
+                session_key="child-session",
+                turn_id="child-turn",
+                seq=1,
+                role="assistant",
+                content="子任务完成",
+                task_id="task-main",
+                parent_task_id="task-main",
+                source_type="subagent",
+                owner="worker",
+            )
+        )
+
+        processor = MemTaskProcessor(store, _FakeEmbedder())
+        await processor.on_chunks_ingested(
+            "child-session",
+            session_end=False,
+            owner="worker",
+        )
+
+        self.assertEqual(list(store.tasks), ["task-main"])
+        self.assertEqual(store.tasks["task-main"].status, "active")
+        self.assertEqual(
+            {store.chunks["child-user"].task_id, store.chunks["child-asst"].task_id},
+            {"task-main"},
+        )
+
     async def test_long_task_builds_boundary_summary(self) -> None:
         class _SpyTaskProcessor(MemTaskProcessor):
             async def _llm_call(self, system: str, user: str, *, max_tokens: int = 1024, temperature: float = 0.1) -> str:
@@ -390,6 +504,82 @@ class MemPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.chunks["new-user"].task_id, "task-1")
         self.assertEqual(store.tasks["task-1"].status, "active")
         self.assertGreater(processor.last_gap_ms or 0, 0)
+
+    async def test_uncertain_boundary_stays_unassigned_for_human_review(self) -> None:
+        class _UncertainProcessor(MemTaskProcessor):
+            async def _judge_new_topic(self, context: str, new_message: str, *, gap_ms: int | None = None):
+                return None
+
+        store = _FakeStoreForTaskProcessor()
+        task = Task(id="task-1", session_key="s1", owner="agent:main", status="active")
+        store.insert_task(task)
+        for chunk in (
+            Chunk(id="old-user", session_key="s1", turn_id="t1", seq=0, role="user", content="修复数据库", task_id="task-1", owner="agent:main", created_at=1),
+            Chunk(id="old-asst", session_key="s1", turn_id="t1", seq=1, role="assistant", content="正在修复", task_id="task-1", owner="agent:main", created_at=2),
+            Chunk(id="new-user", session_key="s1", turn_id="t2", seq=0, role="user", content="鱼香肉丝怎么做", owner="agent:main", created_at=3),
+            Chunk(id="new-asst", session_key="s1", turn_id="t2", seq=1, role="assistant", content="准备食材", owner="agent:main", created_at=4),
+        ):
+            store.insert_chunk(chunk)
+
+        processor = _UncertainProcessor(store=store, embedder=_FakeEmbedder())
+        await processor._process_chunks_incrementally(task, "s1", "agent:main")
+
+        self.assertIsNone(store.chunks["new-user"].task_id)
+        self.assertIsNone(store.chunks["new-asst"].task_id)
+        reviews = list(store.boundary_reviews.values())
+        self.assertEqual(len(reviews), 1)
+        self.assertEqual(reviews[0].turn_id, "t2")
+        self.assertEqual(reviews[0].status, "pending")
+
+    def test_boundary_judgment_parser_requires_valid_structured_output(self) -> None:
+        parsed = MemTaskProcessor._parse_boundary_judgment(
+            '{"decision":"NEW","confidence":0.96,"reason":"目标发生变化"}'
+        )
+        empty = MemTaskProcessor._parse_boundary_judgment("")
+
+        self.assertEqual(parsed.decision, "NEW")
+        self.assertEqual(parsed.confidence, 0.96)
+        self.assertEqual(empty.decision, "UNCERTAIN")
+        self.assertEqual(empty.reason, "empty_model_response")
+
+    async def test_human_create_new_resolution_finalizes_old_task_and_assigns_turn(self) -> None:
+        class _SummaryProcessor(MemTaskProcessor):
+            async def _llm_call(self, system: str, user: str, *, max_tokens: int = 1024, temperature: float = 0.1) -> str:
+                return "📌 Title\n数据库修复\n\n✅ Outcome\n修复完成"
+
+        store = _FakeStoreForTaskProcessor()
+        old_task = Task(id="task-1", session_key="s1", owner="agent:main", status="active")
+        store.insert_task(old_task)
+        for chunk in (
+            Chunk(id="old-user", session_key="s1", turn_id="t1", seq=0, role="user", content="请修复生产环境数据库连接失败的问题，并检查端口、用户名和连接超时配置", summary="修复数据库", task_id="task-1", owner="agent:main", created_at=1),
+            Chunk(id="old-asst", session_key="s1", turn_id="t1", seq=1, role="assistant", content="已经检查数据库配置并修复错误端口，连接测试目前可以正常建立", summary="修复完成", task_id="task-1", owner="agent:main", created_at=2),
+            Chunk(id="old-user-2", session_key="s1", turn_id="t1b", seq=0, role="user", content="继续验证生产环境数据库连接是否完全恢复，并运行集成测试确认没有回归", summary="验证连接", task_id="task-1", owner="agent:main", created_at=3),
+            Chunk(id="old-asst-2", session_key="s1", turn_id="t1b", seq=1, role="assistant", content="生产环境连接验证成功，相关集成测试全部通过，没有发现新的连接错误", summary="验证成功", task_id="task-1", owner="agent:main", created_at=4),
+            Chunk(id="new-user", session_key="s1", turn_id="t2", seq=0, role="user", content="鱼香肉丝怎么做", owner="agent:main", created_at=5),
+            Chunk(id="new-asst", session_key="s1", turn_id="t2", seq=1, role="assistant", content="准备食材", owner="agent:main", created_at=6),
+        ):
+            store.insert_chunk(chunk)
+        review = store.create_boundary_review(BoundaryReview(
+            id="review-1", session_key="s1", owner="agent:main",
+            current_task_id="task-1", turn_id="t2",
+        ))
+        processor = _SummaryProcessor(store=store, embedder=_FakeEmbedder())
+
+        resolved = await processor.resolve_boundary_review(
+            review.id, action="create_new", note="目标完全不同",
+        )
+
+        self.assertEqual(store.tasks["task-1"].status, "completed")
+        self.assertTrue(store.tasks["task-1"].summary)
+        self.assertEqual(resolved.status, "resolved")
+        self.assertEqual(resolved.resolution, "create_new")
+        new_task = next(task for task in store.tasks.values() if task.id != "task-1")
+        self.assertEqual(store.chunks["new-user"].task_id, new_task.id)
+        self.assertEqual(store.chunks["new-asst"].task_id, new_task.id)
+
+        repeated = await processor.resolve_boundary_review(review.id, action="orphan")
+        self.assertEqual(repeated.resolution, "create_new")
+        self.assertEqual(store.chunks["new-user"].task_id, new_task.id)
 
     async def test_get_chunks_by_task_default_behavior_is_unbounded(self) -> None:
         store = _FakeStoreForTaskProcessor()

@@ -61,6 +61,7 @@ class SubagentRunner:
         agent_id: str,
         task: str,
         requester_key: str,
+        parent_task_id: str | None = None,
         run_timeout_seconds: float = 0,
     ) -> asyncio.Task[None]:
         async_task = asyncio.create_task(
@@ -70,6 +71,7 @@ class SubagentRunner:
                 agent_id=agent_id,
                 task=task,
                 requester_key=requester_key,
+                parent_task_id=parent_task_id,
                 run_timeout_seconds=run_timeout_seconds,
             )
         )
@@ -153,6 +155,7 @@ class SubagentRunner:
         agent_id: str,
         task: str,
         requester_key: str,
+        parent_task_id: str | None = None,
         run_timeout_seconds: float = 0,
     ) -> None:
         from infra.event_bus import Events
@@ -188,6 +191,7 @@ class SubagentRunner:
                     session_id=session_id,
                     agent_id=agent_id,
                     prompt_mode="minimal",
+                    parent_task_id=parent_task_id,
                 ):
                     event_type = event.get("type")
                     if event_type == "token":

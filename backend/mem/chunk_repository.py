@@ -32,57 +32,46 @@ class ChunkRepository:
         if not chunk.updated_at:
             chunk.updated_at = now
 
-        self._connection.execute(
-            """INSERT INTO chunks
-               (id, session_key, turn_id, seq, role, content, kind, summary,
-                task_id, skill_id, owner, content_hash,
-                dedup_status, dedup_target, dedup_reason,
-                summary_source, embedding_status, embedding_error,
-                created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(id) DO UPDATE SET
-                   session_key=excluded.session_key,
-                   turn_id=excluded.turn_id,
-                   seq=excluded.seq,
-                   role=excluded.role,
-                   content=excluded.content,
-                   kind=excluded.kind,
-                   summary=excluded.summary,
-                   task_id=excluded.task_id,
-                   skill_id=excluded.skill_id,
-                   owner=excluded.owner,
-                   content_hash=excluded.content_hash,
-                   dedup_status=excluded.dedup_status,
-                   dedup_target=excluded.dedup_target,
-                   dedup_reason=excluded.dedup_reason,
-                   summary_source=excluded.summary_source,
-                   embedding_status=excluded.embedding_status,
-                   embedding_error=excluded.embedding_error,
-                   created_at=excluded.created_at,
-                   updated_at=excluded.updated_at""",
-            (
-                chunk.id,
-                chunk.session_key,
-                chunk.turn_id,
-                chunk.seq,
-                chunk.role,
-                chunk.content,
-                chunk.kind,
-                chunk.summary,
-                chunk.task_id,
-                chunk.skill_id,
-                chunk.owner,
-                chunk.content_hash,
-                chunk.dedup_status,
-                chunk.dedup_target,
-                chunk.dedup_reason,
-                chunk.summary_source,
-                chunk.embedding_status,
-                chunk.embedding_error,
-                chunk.created_at,
-                chunk.updated_at,
-            ),
+        cursor = self._connection.execute("PRAGMA table_info(chunks)")
+        columns = {row[1] for row in cursor.fetchall()}
+        cursor.close()
+        has_provenance = {
+            "parent_task_id",
+            "source_type",
+        }.issubset(columns)
+        insert_columns = [
+            "id", "session_key", "turn_id", "seq", "role", "content",
+            "kind", "summary", "task_id",
+        ]
+        insert_values: list[Any] = [
+            chunk.id, chunk.session_key, chunk.turn_id, chunk.seq,
+            chunk.role, chunk.content, chunk.kind, chunk.summary,
+            chunk.task_id,
+        ]
+        if has_provenance:
+            insert_columns.extend(["parent_task_id", "source_type"])
+            insert_values.extend([chunk.parent_task_id, chunk.source_type])
+        insert_columns.extend([
+            "skill_id", "owner", "content_hash", "dedup_status",
+            "dedup_target", "dedup_reason", "summary_source",
+            "embedding_status", "embedding_error", "created_at", "updated_at",
+        ])
+        insert_values.extend([
+            chunk.skill_id, chunk.owner, chunk.content_hash, chunk.dedup_status,
+            chunk.dedup_target, chunk.dedup_reason, chunk.summary_source,
+            chunk.embedding_status, chunk.embedding_error, chunk.created_at,
+            chunk.updated_at,
+        ])
+        update_columns = [column for column in insert_columns if column != "id"]
+        sql = (
+            "INSERT INTO chunks (" + ", ".join(insert_columns) + ") VALUES ("
+            + ", ".join("?" for _ in insert_columns)
+            + ") ON CONFLICT(id) DO UPDATE SET "
+            + ", ".join(
+                f"{column}=excluded.{column}" for column in update_columns
+            )
         )
+        self._connection.execute(sql, insert_values)
         self._sync_fts(chunk.id)
         self._connection.commit()
 
@@ -172,6 +161,15 @@ class ChunkRepository:
         rows = self._connection.execute(sql, params).fetchall()
         return [row_to_chunk(row) for row in rows]
 
+    def get_by_turn(self, session_key: str, turn_id: str) -> list[Chunk]:
+        rows = self._connection.execute(
+            """SELECT * FROM chunks
+            WHERE session_key=? AND turn_id=? AND dedup_status='active'
+            ORDER BY seq, created_at""",
+            (session_key, turn_id),
+        ).fetchall()
+        return [row_to_chunk(row) for row in rows]
+
     def get_for_embedding_retry(
         self,
         owner: str | None = None,
@@ -253,6 +251,8 @@ def row_to_chunk(row: sqlite3.Row) -> Chunk:
         kind=row["kind"] or "paragraph",
         summary=row["summary"] or "",
         task_id=row["task_id"],
+        parent_task_id=row["parent_task_id"] if "parent_task_id" in row.keys() else None,
+        source_type=row["source_type"] if "source_type" in row.keys() else "main_agent",
         skill_id=row["skill_id"],
         owner=row["owner"] or "agent:main",
         content_hash=row["content_hash"] or "",

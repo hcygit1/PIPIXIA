@@ -54,14 +54,19 @@ class MemTaskProcessorStorePortTests(unittest.TestCase):
         MemTaskProcessorStore = _task_processor_store_port()
         expected = {
             "assign_chunks_to_task",
+            "create_boundary_review",
             "finalize_task",
             "get_active_task_by_session",
             "get_all_active_tasks",
+            "get_boundary_review",
             "get_chunks_by_task",
+            "get_chunks_by_turn",
+            "get_pending_boundary_review",
             "get_task",
             "get_unassigned_chunks",
             "insert_task",
             "orphan_chunk",
+            "resolve_boundary_review",
             "update_task",
             "upsert_task_embedding",
         }

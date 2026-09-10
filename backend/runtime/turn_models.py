@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -23,3 +23,6 @@ class TurnExecutionRequest:
     summary_tokens: int
     history_tokens: int
     active_tokens: int
+    observability_metadata: dict[str, Any] = field(default_factory=dict)
+    parent_task_id: str | None = None
+    evaluation_mode: bool = False

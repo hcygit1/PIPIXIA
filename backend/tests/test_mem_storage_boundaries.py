@@ -141,7 +141,8 @@ class MemoryStorageBoundaryTests(unittest.TestCase):
             result["columns"]["chunks"],
             [
                 "id", "session_key", "turn_id", "seq", "role", "content",
-                "kind", "summary", "task_id", "skill_id", "owner",
+                "kind", "summary", "task_id", "parent_task_id", "source_type",
+                "skill_id", "owner",
                 "content_hash", "dedup_status", "dedup_target", "dedup_reason",
                 "summary_source", "embedding_status", "embedding_error",
                 "created_at", "updated_at",

@@ -153,6 +153,7 @@ class TurnCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
             "s1",
             "question",
             "answer",
+            "turn-1",
         )
         maybe_auto_compact.assert_awaited_once_with(
             "s1",
@@ -160,6 +161,34 @@ class TurnCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
             overhead_tokens=14,
         )
         self.assertEqual(pending_tasks, set())
+
+    async def test_evaluation_mode_does_not_persist_or_ingest(self) -> None:
+        save_message = Mock()
+        incremental_ingest = AsyncMock()
+        maybe_auto_compact = AsyncMock()
+        service = TurnCompletionService(
+            save_message=save_message,
+            write_skills_snapshot=Mock(),
+            count_tokens=lambda _text: 1,
+            parse_text_tool_calls=lambda _content: [],
+            strip_tool_call_patterns=lambda content: content,
+            should_persist_input_message=lambda _role: True,
+            create_task=asyncio.create_task,
+            incremental_ingest=incremental_ingest,
+            get_pending_tasks=lambda: set(),
+            maybe_auto_compact=maybe_auto_compact,
+        )
+        request = TurnExecutionRequest(**{**self._request().__dict__, "evaluation_mode": True})
+        service.finalize(
+            request=request, turn=SimpleNamespace(run_id="eval-turn"), model_ref="fake/model",
+            full_response="evaluation answer", tool_calls_log=[],
+            run_tracker=SimpleNamespace(complete_turn=Mock(return_value=None)),
+            audit_logger=SimpleNamespace(log_turn_end=Mock()),
+        )
+        await service.run_follow_up(request=request, turn=SimpleNamespace(run_id="eval-turn"), done_content="evaluation answer")
+        save_message.assert_not_called()
+        incremental_ingest.assert_not_awaited()
+        maybe_auto_compact.assert_not_awaited()
 
 
 if __name__ == "__main__":

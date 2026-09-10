@@ -92,10 +92,7 @@ class TurnExecutor:
         write_skills_snapshot: Callable[[str], None],
         emit_event: Callable[[str, dict[str, Any]], None],
         count_tokens: Callable[[str], int],
-        incremental_ingest: Callable[
-            [str, str, str, str],
-            Awaitable[None],
-        ],
+        incremental_ingest: Callable[..., Awaitable[None]],
         get_pending_tasks: Callable[[], set[asyncio.Task]],
         maybe_auto_compact: Callable[..., Awaitable[None]],
     ) -> None:

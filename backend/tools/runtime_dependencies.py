@@ -12,6 +12,7 @@ class ToolRuntimeDependencies:
     get_memory_recall: Callable[[str], Any | None]
     get_memory_store: Callable[[str], Any | None]
     count_active_for_requester: Callable[[str], int]
+    get_or_create_memory_task_id: Callable[[str, str], str | None] | None = None
 
 
 def _get_global_session_manager() -> Any:
@@ -38,6 +39,17 @@ def _count_global_active_for_requester(requester_key: str) -> int:
     return registry.count_active_for_requester(requester_key)
 
 
+def _get_or_create_global_memory_task_id(
+    agent_id: str, session_id: str,
+) -> str | None:
+    from runtime.agent import agent_manager
+
+    return agent_manager._memory_runtime.get_or_create_active_task_id(
+        agent_id,
+        session_id,
+    )
+
+
 def default_tool_runtime_dependencies() -> ToolRuntimeDependencies:
     """Keep legacy direct factory calls dynamic and patch-compatible."""
     return ToolRuntimeDependencies(
@@ -45,4 +57,7 @@ def default_tool_runtime_dependencies() -> ToolRuntimeDependencies:
         get_memory_recall=_get_global_memory_recall,
         get_memory_store=_get_global_memory_store,
         count_active_for_requester=_count_global_active_for_requester,
+        get_or_create_memory_task_id=(
+            _get_or_create_global_memory_task_id
+        ),
     )

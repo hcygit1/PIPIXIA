@@ -1096,6 +1096,7 @@ class TurnExecutorTests(unittest.IsolatedAsyncioTestCase):
             "s1",
             "question",
             "answer",
+            "turn-1",
         )
         maybe_auto_compact.assert_awaited_once_with(
             "s1",

@@ -16,12 +16,16 @@ class AgentManagerSessionCompatibilityMixin:
         session_id: str,
         user_content: str,
         assistant_content: str,
+        turn_id: str | None = None,
+        parent_task_id: str | None = None,
     ) -> None:
         await self._incremental_ingest(
             agent_id,
             session_id,
             user_content,
             assistant_content,
+            turn_id,
+            parent_task_id,
         )
 
     async def _run_auto_compaction(
@@ -54,12 +58,16 @@ class AgentManagerSessionCompatibilityMixin:
         session_id: str,
         user_content: str,
         assistant_content: str,
+        turn_id: str | None = None,
+        parent_task_id: str | None = None,
     ) -> None:
         await self._memory_runtime.ingest_turn(
             agent_id,
             session_id,
             user_content,
             assistant_content,
+            turn_id=turn_id,
+            parent_task_id=parent_task_id,
         )
 
     async def _batch_ingest_messages(
@@ -68,12 +76,14 @@ class AgentManagerSessionCompatibilityMixin:
         session_id: str,
         messages: list[dict[str, Any]],
         session_end: bool = False,
+        parent_task_id: str | None = None,
     ) -> None:
         await self._memory_runtime.ingest_messages(
             agent_id,
             session_id,
             messages,
             session_end=session_end,
+            parent_task_id=parent_task_id,
         )
 
     async def _maybe_auto_compact(

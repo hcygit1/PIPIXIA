@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Callable
 
+from sessions.session_identity import session_key_from_session_id
 from subagents.subagent_execution import (
     RunnerFactory,
     SubagentExecutionService,
@@ -89,8 +90,9 @@ class SubagentService:
         target_agent_id: str = "",
         label: str | None = None,
         model: str | None = None,
+        parent_task_id: str | None = None,
     ) -> SpawnResult:
-        return self._execution.spawn(
+        spawn_kwargs = dict(
             requester_agent_id=requester_agent_id,
             requester_session_id=requester_session_id,
             task=task,
@@ -98,6 +100,9 @@ class SubagentService:
             label=label,
             model=model,
         )
+        if parent_task_id:
+            spawn_kwargs["parent_task_id"] = parent_task_id
+        return self._execution.spawn(**spawn_kwargs)
 
     def list_runs(
         self,
@@ -152,3 +157,13 @@ class SubagentService:
 
     def count_active_for_requester(self, requester_key: str) -> int:
         return self._registry.count_active_for_requester(requester_key)
+
+    def parent_task_id_for_session(
+        self, agent_id: str, session_id: str,
+    ) -> str | None:
+        """Resolve the root task inherited by a child-agent session."""
+        session_key = session_key_from_session_id(agent_id, session_id)
+        for record in self._registry.list_runs():
+            if record.child_session_key == session_key:
+                return record.parent_task_id
+        return None

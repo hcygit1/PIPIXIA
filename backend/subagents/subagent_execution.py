@@ -47,6 +47,7 @@ class SubagentExecutionService:
         target_agent_id: str = "",
         label: str | None = None,
         model: str | None = None,
+        parent_task_id: str | None = None,
     ) -> SpawnResult:
         requester_agent_id = requester_agent_id or "main"
         target_agent_id = target_agent_id or requester_agent_id
@@ -97,6 +98,7 @@ class SubagentExecutionService:
                 task=task,
                 label=label,
                 model=model,
+                parent_task_id=parent_task_id,
                 spawn_depth=child_depth,
                 max_active_for_requester=max_children,
             )
@@ -121,6 +123,7 @@ class SubagentExecutionService:
                 agent_id=target_agent_id,
                 task=task,
                 requester_key=requester_key,
+                parent_task_id=parent_task_id,
                 run_timeout_seconds=self._run_timeout(
                     subagent_config
                 ),
@@ -246,6 +249,7 @@ class SubagentExecutionService:
                 agent_id=target_agent_id,
                 task=message,
                 requester_key=entry.requester_session_key,
+                parent_task_id=entry.parent_task_id,
                 run_timeout_seconds=self._run_timeout(
                     subagent_config
                 ),
@@ -296,6 +300,8 @@ class SubagentExecutionService:
         if self._runner_factory is None:
             raise RuntimeError("subagent runner is unavailable")
         requester_agent_id = kwargs.pop("requester_agent_id")
+        if kwargs.get("parent_task_id") is None:
+            kwargs.pop("parent_task_id", None)
         runner = self._runner_factory(requester_agent_id)
         runner.start(**kwargs)
 

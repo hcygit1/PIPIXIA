@@ -132,6 +132,9 @@ class AgentRuntimeAssembler:
                 count_active_for_requester=(
                     subagent_service.count_active_for_requester
                 ),
+                get_or_create_memory_task_id=(
+                    memory_runtime.get_or_create_active_task_id
+                ),
             ),
         )
         turn_context = TurnContext()

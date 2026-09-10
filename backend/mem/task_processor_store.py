@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from mem.models import Chunk, Task, TaskStatus
+from mem.models import BoundaryReview, Chunk, Task, TaskStatus
 
 
 class MemTaskProcessorStore(Protocol):
@@ -57,4 +57,28 @@ class MemTaskProcessorStore(Protocol):
         ...
 
     def update_task(self, task_id: str, **fields: Any) -> None:
+        ...
+
+    def create_boundary_review(self, review: BoundaryReview) -> BoundaryReview:
+        ...
+
+    def get_boundary_review(self, review_id: str) -> BoundaryReview | None:
+        ...
+
+    def get_pending_boundary_review(
+        self, session_key: str, owner: str,
+    ) -> BoundaryReview | None:
+        ...
+
+    def resolve_boundary_review(
+        self,
+        review_id: str,
+        *,
+        resolution: str,
+        target_task_id: str | None = None,
+        note: str = "",
+    ) -> BoundaryReview | None:
+        ...
+
+    def get_chunks_by_turn(self, session_key: str, turn_id: str) -> list[Chunk]:
         ...

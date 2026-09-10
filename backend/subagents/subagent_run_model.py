@@ -21,6 +21,7 @@ class SubagentRunRecord:
     task: str
     label: str | None = None
     model: str | None = None
+    parent_task_id: str | None = None
     cleanup: Literal["delete", "keep"] = "keep"
     spawn_depth: int = 0
     created_at: float = field(default_factory=time.time)

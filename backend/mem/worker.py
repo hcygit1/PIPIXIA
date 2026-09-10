@@ -103,6 +103,9 @@ class IngestMessage:
     session_key: str
     turn_id: str
     owner: str = "agent:main"
+    task_id: str | None = None
+    parent_task_id: str | None = None
+    source_type: Literal["main_agent", "subagent"] = "main_agent"
     timestamp: int = 0
 
 
@@ -320,6 +323,9 @@ class MemWorker:
             content=prepared.content,
             kind=prepared.kind,
             summary=prepared.summary,
+            task_id=prepared.msg.task_id,
+            parent_task_id=prepared.msg.parent_task_id,
+            source_type=prepared.msg.source_type,
             owner=prepared.msg.owner,
             content_hash=content_hash(prepared.content),
             dedup_status=dedup_status,

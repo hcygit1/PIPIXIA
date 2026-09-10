@@ -10,6 +10,8 @@ DedupStatus = Literal["active", "duplicate", "merged", "orphaned"]
 SummarySource = Literal["llm", "fallback"]
 EmbeddingStatus = Literal["ok", "failed", "skipped"]
 TaskStatus = Literal["active", "completed", "skipped"]
+TaskSourceType = Literal["main_agent", "subagent"]
+BoundaryReviewStatus = Literal["pending", "resolved"]
 SkillStatus = Literal["active", "archived", "draft"]
 SkillVisibility = Literal["private", "public"]
 
@@ -25,6 +27,8 @@ class Chunk:
     kind: str = "paragraph"
     summary: str = ""
     task_id: str | None = None
+    parent_task_id: str | None = None
+    source_type: TaskSourceType = "main_agent"
     skill_id: str | None = None
     owner: str = "agent:main"
     content_hash: str = ""
@@ -51,6 +55,25 @@ class Task:
     started_at: int = 0
     ended_at: int | None = None
     updated_at: int = 0
+
+
+@dataclass
+class BoundaryReview:
+    id: str
+    session_key: str
+    owner: str
+    current_task_id: str
+    turn_id: str
+    confidence: float = 0.0
+    reason: str = ""
+    retry_count: int = 0
+    status: BoundaryReviewStatus = "pending"
+    resolution: str = ""
+    target_task_id: str | None = None
+    note: str = ""
+    created_at: int = 0
+    updated_at: int = 0
+    resolved_at: int | None = None
 
 
 @dataclass

@@ -30,7 +30,7 @@ class TurnCompletionService:
         strip_tool_call_patterns: Callable[[str], str],
         should_persist_input_message: Callable[[str], bool],
         create_task: Callable[[Awaitable[None]], Any],
-        incremental_ingest: Callable[[str, str, str, str], Awaitable[None]],
+        incremental_ingest: Callable[..., Awaitable[None]],
         get_pending_tasks: Callable[[], set[Any]],
         maybe_auto_compact: Callable[..., Awaitable[None]],
         log: Any = logger,
@@ -82,7 +82,8 @@ class TurnCompletionService:
             else 0
         )
 
-        if self._should_persist_input_message(request.persist_input_role):
+        evaluation_mode = bool(getattr(request, "evaluation_mode", False))
+        if not evaluation_mode and self._should_persist_input_message(request.persist_input_role):
             self._save_message(
                 request.session_id,
                 request.agent_id,
@@ -94,22 +95,24 @@ class TurnCompletionService:
             if self._parse_text_tool_calls(full_response)
             else full_response
         )
-        self._save_message(
-            request.session_id,
-            request.agent_id,
-            "assistant",
-            content_to_save,
-            tool_calls=tool_calls_log if tool_calls_log else None,
-        )
-        self._write_skills_snapshot(request.agent_id)
+        if not evaluation_mode:
+            self._save_message(
+                request.session_id,
+                request.agent_id,
+                "assistant",
+                content_to_save,
+                tool_calls=tool_calls_log if tool_calls_log else None,
+            )
+            self._write_skills_snapshot(request.agent_id)
         completed = run_tracker.complete_turn(turn.run_id)
 
         if completed:
             try:
-                request.state.record_turn(
-                    completed.input_tokens,
-                    completed.output_tokens,
-                )
+                if not evaluation_mode:
+                    request.state.record_turn(
+                        completed.input_tokens,
+                        completed.output_tokens,
+                    )
                 audit_logger.log_turn_end(
                     request.agent_id,
                     turn.run_id,
@@ -149,6 +152,8 @@ class TurnCompletionService:
         turn: Any,
         done_content: str,
     ) -> None:
+        if bool(getattr(request, "evaluation_mode", False)):
+            return
         try:
             ingested_user_content = (
                 request.message
@@ -156,12 +161,18 @@ class TurnCompletionService:
                 else ""
             )
             pending_tasks = self._get_pending_tasks()
+            ingest_kwargs: dict[str, Any] = {}
+            parent_task_id = getattr(request, "parent_task_id", None)
+            if parent_task_id:
+                ingest_kwargs["parent_task_id"] = parent_task_id
             task = self._create_task(
                 self._incremental_ingest(
                     request.agent_id,
                     request.session_id,
                     ingested_user_content,
                     done_content,
+                    turn.run_id,
+                    **ingest_kwargs,
                 )
             )
             pending_tasks.add(task)

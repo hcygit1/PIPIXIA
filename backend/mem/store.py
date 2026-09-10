@@ -20,10 +20,12 @@ from typing import Any
 import sqlite_vec
 from sqlite_vec import serialize_float32
 
+from mem.boundary_review_repository import BoundaryReviewRepository
 from mem.chunk_repository import ChunkRepository, row_to_chunk as _row_to_chunk
 from mem.dashboard_queries import MemoryDashboardQueries
 from mem.fts_index import MemoryFtsIndex
 from mem.models import (
+    BoundaryReview,
     Chunk,
     DedupStatus,
     EmbeddingStatus,
@@ -115,6 +117,10 @@ class MemStore:
         self._tasks = TaskRepository(
             self._conn,
             sync_fts=lambda task_id: self._sync_task_fts(task_id),
+            now_ms=lambda: _now_ms(),
+        )
+        self._boundary_reviews = BoundaryReviewRepository(
+            self._conn,
             now_ms=lambda: _now_ms(),
         )
         self._skills = SkillRepository(
@@ -222,6 +228,9 @@ class MemStore:
 
     def get_chunks_by_task(self, task_id: str, limit: int | None = None) -> list[Chunk]:
         return self._chunks.get_by_task(task_id, limit)
+
+    def get_chunks_by_turn(self, session_key: str, turn_id: str) -> list[Chunk]:
+        return self._chunks.get_by_turn(session_key, turn_id)
 
     def get_chunks_for_embedding_retry(
         self,
@@ -384,6 +393,41 @@ class MemStore:
 
     def update_task(self, task_id: str, **fields: Any) -> None:
         self._tasks.update(task_id, **fields)
+
+    # ------------------------------------------------------------------
+    # Boundary reviews
+    # ------------------------------------------------------------------
+
+    def create_boundary_review(self, review: BoundaryReview) -> BoundaryReview:
+        return self._boundary_reviews.create(review)
+
+    def get_boundary_review(self, review_id: str) -> BoundaryReview | None:
+        return self._boundary_reviews.get(review_id)
+
+    def get_pending_boundary_review(
+        self, session_key: str, owner: str,
+    ) -> BoundaryReview | None:
+        return self._boundary_reviews.get_pending_for_session(session_key, owner)
+
+    def list_pending_boundary_reviews(
+        self, owner: str, limit: int = 100,
+    ) -> list[BoundaryReview]:
+        return self._boundary_reviews.list_pending(owner, limit)
+
+    def resolve_boundary_review(
+        self,
+        review_id: str,
+        *,
+        resolution: str,
+        target_task_id: str | None = None,
+        note: str = "",
+    ) -> BoundaryReview | None:
+        return self._boundary_reviews.resolve(
+            review_id,
+            resolution=resolution,
+            target_task_id=target_task_id,
+            note=note,
+        )
 
     # ------------------------------------------------------------------
     # Skills — CRUD

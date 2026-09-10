@@ -10,16 +10,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable, Coroutine, Literal
 
 import httpx
 
 from mem.embedder import MemEmbedder
-from mem.models import Chunk, Task
+from mem.models import BoundaryReview, Chunk, Task
 from mem.task_processor_store import MemTaskProcessorStore
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,8 @@ TOPIC_JUDGE_PROMPT = (
     "You are a conservative conversation task-boundary detector. "
     "Given the CURRENT task context and a single NEW user message, "
     "decide whether the new message belongs to the SAME task or clearly starts a NEW task.\n\n"
-    "Answer ONLY \"NEW\" or \"SAME\".\n\n"
+    "Return one JSON object with decision, confidence, and reason.\n"
+    "decision must be SAME, NEW, or UNCERTAIN. confidence must be 0..1.\n\n"
     "Choose SAME when the new message:\n"
     "- continues, follows up on, retries, corrects, refines, or asks for the next step\n"
     "- references the same file, service, error, config, command, object, or workflow\n"
@@ -78,8 +80,8 @@ TOPIC_JUDGE_PROMPT = (
     "- Even after hours, if the user is clearly continuing the same troubleshooting or workflow, choose SAME\n"
     "- Same topic area does not automatically mean NEW\n"
     "- Follow-up questions on the same issue should be SAME\n"
-    "- When in doubt, choose SAME\n\n"
-    "Output exactly one word: NEW or SAME"
+    "- When evidence is insufficient, choose UNCERTAIN instead of guessing\n\n"
+    'Output: {"decision":"SAME|NEW|UNCERTAIN","confidence":0.0,"reason":"brief reason"}'
 )
 
 BOUNDARY_SUMMARY_PROMPT = (
@@ -96,6 +98,13 @@ BOUNDARY_SUMMARY_PROMPT = (
 )
 
 OnTaskCompleted = Callable[[Task], Coroutine[Any, Any, None]]
+
+
+@dataclass(frozen=True)
+class BoundaryJudgment:
+    decision: Literal["SAME", "NEW", "UNCERTAIN"]
+    confidence: float
+    reason: str
 
 
 # ---------------------------------------------------------------------------
@@ -144,13 +153,13 @@ class MemTaskProcessor:
     # ------------------------------------------------------------------
 
     async def _detect_and_process(self, session_key: str, owner: str) -> None:
-        all_active = self.store.get_all_active_tasks(owner)
-        for t in all_active:
-            if t.session_key != session_key:
-                logger.info("Session changed: finalizing task=%s from session=%s", t.id, t.session_key)
-                await self._finalize_task(t)
-
         active = self.store.get_active_task_by_session(session_key, owner)
+        unassigned = self.store.get_unassigned_chunks(session_key, owner)
+
+        # A sub-agent writes chunks pre-bound to its parent's business task.
+        # It owns no task in its own session, so it must not create or close one.
+        if not active and not unassigned:
+            return
         if not active:
             active = self._create_task(session_key, owner)
 
@@ -159,6 +168,15 @@ class MemTaskProcessor:
     async def _process_chunks_incrementally(
         self, active_task: Task, session_key: str, owner: str,
     ) -> None:
+        pending_review = self.store.get_pending_boundary_review(session_key, owner)
+        if pending_review:
+            logger.info(
+                "Boundary processing paused: review=%s session=%s",
+                pending_review.id,
+                session_key,
+            )
+            return
+
         unassigned = self.store.get_unassigned_chunks(session_key, owner)
         if not unassigned:
             return
@@ -193,18 +211,44 @@ class MemTaskProcessor:
                 continue
 
             context = await self._build_boundary_context(current_task, current_chunks)
-            is_new = await self._judge_new_topic(context, user_chunk.content, gap_ms=gap_ms)
+            judgment = await self._judge_boundary_with_retry(
+                context,
+                user_chunk.content,
+                gap_ms=gap_ms,
+            )
 
-            if is_new is None:
-                self._assign_chunks(turn, current_task.id)
-                current_chunks.extend(turn)
-                continue
+            if judgment.decision == "UNCERTAIN":
+                review = self.store.create_boundary_review(BoundaryReview(
+                    id=str(uuid.uuid4()),
+                    session_key=session_key,
+                    owner=owner,
+                    current_task_id=current_task.id,
+                    turn_id=user_chunk.turn_id,
+                    confidence=judgment.confidence,
+                    reason=judgment.reason,
+                    retry_count=2,
+                ))
+                logger.warning(
+                    "Task boundary pending review=%s task=%s turn=%s confidence=%.2f reason=%s",
+                    review.id,
+                    current_task.id,
+                    user_chunk.turn_id,
+                    judgment.confidence,
+                    judgment.reason,
+                )
+                return
 
-            if is_new:
+            if judgment.decision == "NEW":
                 logger.info("Task boundary: LLM judged new topic")
                 await self._finalize_task(current_task)
                 current_task = self._create_task(session_key, owner)
                 current_chunks = []
+            else:
+                logger.info(
+                    "Task boundary: SAME confidence=%.2f reason=%s",
+                    judgment.confidence,
+                    judgment.reason,
+                )
 
             self._assign_chunks(turn, current_task.id)
             current_chunks.extend(turn)
@@ -231,7 +275,7 @@ class MemTaskProcessor:
             return
         self.store.assign_chunks_to_task([c.id for c in chunks], task_id)
 
-    async def _finalize_task(self, task: Task) -> None:
+    async def _finalize_task(self, task: Task, *, notify_completed: bool = True) -> None:
         chunks = self.store.get_chunks_by_task(task.id)
         fallback_title = self._extract_title(chunks)
 
@@ -266,7 +310,7 @@ class MemTaskProcessor:
 
         logger.info("Finalized task=%s title='%s' chunks=%d", task.id, title[:60], len(chunks))
 
-        if self._on_task_completed:
+        if notify_completed and self._on_task_completed:
             finalized = self.store.get_task(task.id)
             if finalized:
                 try:
@@ -458,7 +502,7 @@ class MemTaskProcessor:
         new_message: str,
         *,
         gap_ms: int | None = None,
-    ) -> bool | None:
+    ) -> BoundaryJudgment:
         gap_text = ""
         if gap_ms is not None and gap_ms > 0:
             gap_text = f"\nTIME GAP FROM CURRENT TASK: {gap_ms / 3600000:.1f} hours"
@@ -469,17 +513,138 @@ class MemTaskProcessor:
         )
         try:
             result = await self._llm_call(
-                TOPIC_JUDGE_PROMPT, user_content, max_tokens=10, temperature=0,
+                TOPIC_JUDGE_PROMPT, user_content, max_tokens=200, temperature=0,
             )
-            result_upper = result.strip().upper()
-            if "NEW" in result_upper:
-                return True
-            if "SAME" in result_upper:
-                return False
-            return None
+            return self._parse_boundary_judgment(result)
         except Exception as e:
             logger.warning("Topic judge failed: %s", e)
-            return None
+            return BoundaryJudgment("UNCERTAIN", 0.0, f"model_error: {str(e)[:160]}")
+
+    async def _judge_boundary_with_retry(
+        self,
+        context: str,
+        new_message: str,
+        *,
+        gap_ms: int | None,
+    ) -> BoundaryJudgment:
+        last = BoundaryJudgment("UNCERTAIN", 0.0, "no_decision")
+        for attempt in range(2):
+            result = await self._judge_new_topic(
+                context if attempt == 0 else context + "\n\nRe-evaluate conservatively using only task semantics.",
+                new_message,
+                gap_ms=gap_ms,
+            )
+            last = self._normalize_boundary_judgment(result)
+            if last.decision != "UNCERTAIN" and last.confidence >= 0.8:
+                return last
+        return BoundaryJudgment(
+            "UNCERTAIN",
+            last.confidence,
+            last.reason or "low_confidence_after_retry",
+        )
+
+    @staticmethod
+    def _normalize_boundary_judgment(result: Any) -> BoundaryJudgment:
+        # Preserve compatibility with lightweight test doubles and older plugins.
+        if result is True:
+            return BoundaryJudgment("NEW", 1.0, "legacy_boolean")
+        if result is False:
+            return BoundaryJudgment("SAME", 1.0, "legacy_boolean")
+        if isinstance(result, BoundaryJudgment):
+            return result
+        return BoundaryJudgment("UNCERTAIN", 0.0, "invalid_judgment")
+
+    @staticmethod
+    def _parse_boundary_judgment(raw: str) -> BoundaryJudgment:
+        text = (raw or "").strip()
+        if not text:
+            return BoundaryJudgment("UNCERTAIN", 0.0, "empty_model_response")
+        match = re.search(r"\{[\s\S]*\}", text)
+        if match:
+            try:
+                payload = json.loads(match.group(0))
+                decision = str(payload.get("decision", "UNCERTAIN")).upper()
+                if decision not in {"SAME", "NEW", "UNCERTAIN"}:
+                    decision = "UNCERTAIN"
+                confidence = max(0.0, min(1.0, float(payload.get("confidence", 0))))
+                reason = str(payload.get("reason", ""))[:500]
+                return BoundaryJudgment(decision, confidence, reason)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        upper = text.upper()
+        if upper == "NEW":
+            return BoundaryJudgment("NEW", 1.0, "legacy_text")
+        if upper == "SAME":
+            return BoundaryJudgment("SAME", 1.0, "legacy_text")
+        return BoundaryJudgment("UNCERTAIN", 0.0, "invalid_model_response")
+
+    async def resolve_boundary_review(
+        self,
+        review_id: str,
+        *,
+        action: str,
+        target_task_id: str | None = None,
+        note: str = "",
+    ) -> BoundaryReview:
+        allowed = {"assign_current", "create_new", "assign_other", "orphan"}
+        if action not in allowed:
+            raise ValueError(f"unsupported boundary action: {action}")
+
+        async with self._lock:
+            review = self.store.get_boundary_review(review_id)
+            if not review:
+                raise ValueError("boundary review not found")
+            if review.status == "resolved":
+                return review
+
+            chunks = self.store.get_chunks_by_turn(review.session_key, review.turn_id)
+            pending_chunks = [chunk for chunk in chunks if chunk.task_id is None]
+            chunk_ids = [chunk.id for chunk in pending_chunks]
+            resolved_target = target_task_id
+
+            if action == "assign_current":
+                task = self.store.get_task(review.current_task_id)
+                if not task:
+                    raise ValueError("current task not found")
+                resolved_target = task.id
+                self._assign_chunks(pending_chunks, task.id)
+            elif action == "create_new":
+                current = self.store.get_task(review.current_task_id)
+                if current and current.status == "active":
+                    await self._finalize_task(current)
+                new_task = self._create_task(review.session_key, review.owner)
+                resolved_target = new_task.id
+                self._assign_chunks(pending_chunks, new_task.id)
+            elif action == "assign_other":
+                if not target_task_id:
+                    raise ValueError("target_task_id is required")
+                target = self.store.get_task(target_task_id)
+                if not target or target.owner != review.owner:
+                    raise ValueError("target task not found")
+                self._assign_chunks(pending_chunks, target.id)
+                if target.status == "completed":
+                    await self._finalize_task(target, notify_completed=False)
+            else:
+                for chunk_id in chunk_ids:
+                    self.store.orphan_chunk(chunk_id, reason="boundary_review_orphan")
+
+            resolved = self.store.resolve_boundary_review(
+                review.id,
+                resolution=action,
+                target_task_id=resolved_target,
+                note=note,
+            )
+            if not resolved:
+                raise RuntimeError("failed to resolve boundary review")
+
+            active = self.store.get_active_task_by_session(review.session_key, review.owner)
+            if active:
+                await self._process_chunks_incrementally(
+                    active,
+                    review.session_key,
+                    review.owner,
+                )
+            return resolved
 
     async def _llm_call(
         self,

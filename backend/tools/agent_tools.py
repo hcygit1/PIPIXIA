@@ -229,6 +229,8 @@ class SessionsSpawnTool(BaseTool):
     args_schema: type[BaseModel] = SessionsSpawnInput
     current_agent_id: str = "main"
     current_session_id: str = ""
+    parent_task_id: str | None = None
+    _get_or_create_memory_task_id: Any = None
     _subagent_service: Any = None
 
     def _run(self, **kwargs: Any) -> str:
@@ -249,7 +251,32 @@ class SessionsSpawnTool(BaseTool):
         )
 
         try:
-            result = self._subagent_service.spawn(
+            parent_task_id = self.parent_task_id
+            if not parent_task_id:
+                resolver = getattr(
+                    self._subagent_service,
+                    "parent_task_id_for_session",
+                    None,
+                )
+                resolved = (
+                    resolver(
+                        self.current_agent_id,
+                        self.current_session_id,
+                    )
+                    if callable(resolver)
+                    else None
+                )
+                if isinstance(resolved, str) and resolved.strip():
+                    parent_task_id = resolved.strip()
+            if (
+                not parent_task_id
+                and self._get_or_create_memory_task_id is not None
+            ):
+                parent_task_id = self._get_or_create_memory_task_id(
+                    self.current_agent_id,
+                    self.current_session_id,
+                )
+            spawn_kwargs = dict(
                 requester_agent_id=self.current_agent_id,
                 requester_session_id=self.current_session_id,
                 task=task,
@@ -257,6 +284,9 @@ class SessionsSpawnTool(BaseTool):
                 label=label,
                 model=model,
             )
+            if parent_task_id:
+                spawn_kwargs["parent_task_id"] = parent_task_id
+            result = self._subagent_service.spawn(**spawn_kwargs)
         except SubagentServiceError as exc:
             if exc.code == "target_forbidden":
                 return (
@@ -412,17 +442,19 @@ def get_agent_tools(
     dependencies = (
         runtime_dependencies or default_tool_runtime_dependencies()
     )
-    spawn_tool = SessionsSpawnTool(
-        current_agent_id=agent_id,
-        current_session_id=session_id,
-    )
-    spawn_tool._subagent_service = subagent_service
-
     # 注入 agentSessionKey/current_session_id，工具从上下文获取当前会话
     effective_session_id = session_id or ""
     if not effective_session_id:
         session_manager = dependencies.get_session_manager()
         effective_session_id = session_manager.resolve_main_session_id(agent_id)
+    spawn_tool = SessionsSpawnTool(
+        current_agent_id=agent_id,
+        current_session_id=effective_session_id,
+    )
+    spawn_tool._subagent_service = subagent_service
+    spawn_tool._get_or_create_memory_task_id = (
+        dependencies.get_or_create_memory_task_id
+    )
     subagents_tool = SubagentsTool(current_agent_id=agent_id, current_session_id=effective_session_id)
     subagents_tool._subagent_service = subagent_service
     sessions_list_tool = SessionsListTool(current_agent_id=agent_id)

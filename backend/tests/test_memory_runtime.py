@@ -51,7 +51,6 @@ class MemoryRuntimeTests(unittest.IsolatedAsyncioTestCase):
         runtime = MemoryRuntime()
         store = object()
         embedder = object()
-        skill_evolver = SimpleNamespace(on_task_completed=AsyncMock())
         task_processor = SimpleNamespace(on_chunks_ingested=AsyncMock())
         worker = SimpleNamespace(enqueue=AsyncMock())
         recall = object()
@@ -59,17 +58,13 @@ class MemoryRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "enabled": True,
             "storage": {"db_path": "/tmp/pipixia-memory/memory.db"},
             "embedding": {"dimensions": 8},
-            "skill_evolution": {"enabled": True, "auto_evaluate": True},
+            "skill_evolution": {"enabled": True},
         }
 
         with (
             patch("runtime.memory_runtime.resolve_mem_config", return_value=mem_config),
             patch("mem.store.MemStore", return_value=store) as store_factory,
             patch("mem.embedder.MemEmbedder.from_config", return_value=embedder),
-            patch(
-                "mem.skill_evolver.MemSkillEvolver.from_config",
-                return_value=skill_evolver,
-            ),
             patch(
                 "mem.task_processor.MemTaskProcessor.from_config",
                 return_value=task_processor,
@@ -91,12 +86,7 @@ class MemoryRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(runtime.workers["main"], worker)
         self.assertIs(runtime.recalls["main"], recall)
 
-        on_task_completed = task_processor_factory.call_args.kwargs[
-            "on_task_completed"
-        ]
-        task = object()
-        await on_task_completed(task)
-        skill_evolver.on_task_completed.assert_awaited_once_with(task)
+        self.assertNotIn("on_task_completed", task_processor_factory.call_args.kwargs)
 
         on_chunks_ingested = worker_factory.call_args.kwargs[
             "on_chunks_ingested"
@@ -120,15 +110,14 @@ class MemoryRuntimeTests(unittest.IsolatedAsyncioTestCase):
             patch("runtime.memory_runtime.resolve_mem_config", return_value=mem_config),
             patch("mem.store.MemStore", return_value=object()),
             patch("mem.embedder.MemEmbedder.from_config", return_value=object()),
-            patch("mem.skill_evolver.MemSkillEvolver.from_config") as evolver_factory,
             patch("mem.task_processor.MemTaskProcessor.from_config", return_value=task_processor) as processor_factory,
             patch("mem.worker.MemWorker.from_config", return_value=object()),
             patch("mem.recall.MemRecall.from_config", return_value=object()),
         ):
             runtime.initialize_agent("main")
 
-        evolver_factory.assert_not_called()
-        self.assertIsNone(processor_factory.call_args.kwargs["on_task_completed"])
+        processor_factory.assert_called_once()
+        self.assertNotIn("on_task_completed", processor_factory.call_args.kwargs)
 
     def test_initialize_failure_closes_temporary_store_without_publishing(
         self,
@@ -184,10 +173,6 @@ class MemoryRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 return_value=new_embedder,
             ),
             patch(
-                "mem.skill_evolver.MemSkillEvolver.from_config",
-                return_value=SimpleNamespace(on_task_completed=AsyncMock()),
-            ),
-            patch(
                 "mem.task_processor.MemTaskProcessor.from_config",
                 return_value=SimpleNamespace(on_chunks_ingested=AsyncMock()),
             ),
@@ -236,14 +221,37 @@ class MemoryRuntimeTests(unittest.IsolatedAsyncioTestCase):
         worker = SimpleNamespace(enqueue=AsyncMock())
         runtime.workers["main"] = worker
 
-        await runtime.ingest_turn("main", "s1", " user ", " assistant ")
+        await runtime.ingest_turn(
+            "main", "s1", " user ", " assistant ", turn_id="run-1"
+        )
 
         batch = worker.enqueue.await_args.args[0]
         self.assertEqual([item.role for item in batch], ["user", "assistant"])
         self.assertEqual([item.content for item in batch], ["user", "assistant"])
-        self.assertEqual({item.turn_id for item in batch}, {batch[0].turn_id})
+        self.assertEqual({item.turn_id for item in batch}, {"run-1"})
         self.assertEqual({item.owner for item in batch}, {"main"})
+        self.assertEqual({item.task_id for item in batch}, {None})
+        self.assertEqual({item.source_type for item in batch}, {"main_agent"})
         worker.enqueue.assert_awaited_once_with(batch, session_end=False)
+
+    async def test_ingest_turn_binds_subagent_messages_to_parent_task(self) -> None:
+        runtime = MemoryRuntime()
+        worker = SimpleNamespace(enqueue=AsyncMock())
+        runtime.workers["worker"] = worker
+
+        await runtime.ingest_turn(
+            "worker",
+            "subagent-session",
+            "inspect",
+            "done",
+            turn_id="run-1",
+            parent_task_id="task-main",
+        )
+
+        batch = worker.enqueue.await_args.args[0]
+        self.assertEqual({item.task_id for item in batch}, {"task-main"})
+        self.assertEqual({item.parent_task_id for item in batch}, {"task-main"})
+        self.assertEqual({item.source_type for item in batch}, {"subagent"})
 
     async def test_ingest_messages_skips_system_and_empty_content(self) -> None:
         runtime = MemoryRuntime()

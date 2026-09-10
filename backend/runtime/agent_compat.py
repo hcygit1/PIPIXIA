@@ -92,6 +92,14 @@ class AgentManagerCompatibilityMixin:
     def mem_recalls(self, value: dict[str, Any]) -> None:
         self._memory_runtime.recalls = value
 
+    @property
+    def mem_task_processors(self) -> dict[str, Any]:
+        return self._memory_runtime.task_processors
+
+    @mem_task_processors.setter
+    def mem_task_processors(self, value: dict[str, Any]) -> None:
+        self._memory_runtime.task_processors = value
+
     def collect_tools(
         self,
         agent_id: str,
