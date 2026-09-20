@@ -846,3 +846,216 @@ export async function memSearch(agentId: string, query: string, limit?: number):
   const r = await fetch(`${API_BASE}/mem/search?${q}`);
   return r.json();
 }
+
+export async function memEvolutionTasks(agentId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks?${q}`);
+  return r.json();
+}
+
+export async function createMemEvolutionTask(
+    agentId: string, taskFamily: string, title?: string, dataSource: "langfuse" | "skilllearnbench" = "langfuse",
+): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks?${q}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_family: taskFamily, title: title || "", data_source: dataSource }),
+  });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function memEvolutionSkillLearnBenchFamilies(): Promise<any> {
+  const r = await fetch(`${API_BASE}/mem/evolution/skilllearnbench/families`);
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function prepareMemEvolutionSkillLearnBench(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/skilllearnbench/prepare?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function updateMemEvolutionStage(
+  agentId: string, taskId: string, stage: string, note = "", artifacts: Record<string, string> = {},
+): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/stage?${q}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ stage, note, artifacts }),
+  });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function exportMemEvolutionTask(
+  agentId: string, taskId: string, traceIds: string[],
+): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/export?${q}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trace_ids: traceIds }),
+  });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function memEvolutionTraces(
+  agentId: string, taskId: string, params?: { page?: number; limit?: number; sessionId?: string; name?: string },
+): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  if (params?.page) q.set("page", String(params.page));
+  if (params?.limit) q.set("limit", String(params.limit));
+  if (params?.sessionId) q.set("session_id", params.sessionId);
+  if (params?.name) q.set("name", params.name);
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/traces?${q}`);
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function memEvolutionDataset(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/dataset?${q}`);
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function saveMemEvolutionDataset(
+  agentId: string, taskId: string, assignments: Record<string, string[]>,
+): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/dataset/save?${q}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ assignments }),
+  });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function confirmMemEvolutionDataset(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/dataset/confirm?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function memEvolutionCandidate(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/candidate?${q}`);
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function generateMemEvolutionCandidate(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/candidate/generate?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function confirmMemEvolutionCandidate(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/candidate/confirm?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function memEvolutionDev(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/dev?${q}`);
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function runMemEvolutionDev(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/dev/run?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function confirmMemEvolutionDev(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/dev/confirm?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function memEvolutionRevision(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/revision?${q}`);
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function analyzeMemEvolutionRevision(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/revision/analyze?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function runMemEvolutionRevision(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/revision/run?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function iterateMemEvolutionRevision(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/revision/iterate?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function memEvolutionValidation(agentId: string, taskId: string, split: "regression" | "holdout"): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/validation/${split}?${q}`);
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function runMemEvolutionValidation(agentId: string, taskId: string, split: "regression" | "holdout"): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/validation/${split}/run?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function memEvolutionExecution(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/execution?${q}`);
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function cancelMemEvolutionExecution(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/execution/cancel?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function confirmMemEvolutionValidation(agentId: string, taskId: string, split: "regression" | "holdout"): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/validation/${split}/confirm?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function approveMemEvolutionTask(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/approve?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function publishMemEvolutionTask(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/publish?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}

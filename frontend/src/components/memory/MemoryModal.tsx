@@ -3,11 +3,14 @@
 import { useState, useEffect, useCallback } from "react";
 import { useAgentContext } from "@/lib/agentContext";
 import { useUi } from "@/lib/uiContext";
+import SkillEvolutionWorkspace from "@/components/memory/SkillEvolutionWorkspace";
 import * as api from "@/lib/api";
 import {
   X, BrainCircuit, BarChart3, ListTodo, Sparkles, Search,
   ChevronRight, ChevronLeft, Loader2, Database, Clock,
   FileText, MessageSquare, Bot, User, RefreshCw,
+  CircleHelp, Link, Plus, FolderInput, ArchiveX,
+  GitBranch,
 } from "lucide-react";
 
 /* ================================================================
@@ -76,6 +79,21 @@ interface SearchResult {
   sessionKey: string;
   taskId: string | null;
   createdAt: number;
+}
+
+interface BoundaryReviewItem {
+  id: string;
+  sessionKey: string;
+  currentTaskId: string;
+  currentTaskTitle: string;
+  currentTaskSummary: string;
+  turnId: string;
+  confidence: number;
+  reason: string;
+  retryCount: number;
+  createdAt: number;
+  recentContext: { id: string; role: string; content: string }[];
+  pendingChunks: { id: string; role: string; content: string }[];
 }
 
 /* ================================================================
@@ -163,13 +181,13 @@ function OverviewTab({ agentId }: { agentId: string }) {
   if (!stats) return <EmptyState message="记忆系统尚未初始化" />;
 
   return (
-    <div className="space-y-4">
+    <div className="w-full min-w-0 space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>数据概览</h3>
         <button onClick={load} className="btn-ghost p-1" type="button"><RefreshCw className="w-3.5 h-3.5" /></button>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid w-full grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label="记忆片段" value={stats.totalChunks} icon={<FileText className="w-4 h-4" style={{ color: "var(--accent)" }} />} />
         <StatCard label="任务" value={stats.totalTasks} icon={<ListTodo className="w-4 h-4" style={{ color: "var(--accent)" }} />} />
         <StatCard label="技能" value={stats.totalSkills} icon={<Sparkles className="w-4 h-4" style={{ color: "var(--accent)" }} />} />
@@ -271,7 +289,7 @@ function TasksTab({ agentId }: { agentId: string }) {
 
   if (detail) {
     return (
-      <div className="space-y-3">
+      <div className="w-full min-w-0 space-y-3">
         <button onClick={() => setDetail(null)} className="flex items-center gap-1 text-[11px] btn-ghost px-2 py-1" type="button">
           <ChevronLeft className="w-3.5 h-3.5" /> 返回列表
         </button>
@@ -313,7 +331,7 @@ function TasksTab({ agentId }: { agentId: string }) {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="w-full min-w-0 space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>任务列表</h3>
         <div className="flex items-center gap-2">
@@ -381,6 +399,153 @@ function TasksTab({ agentId }: { agentId: string }) {
   );
 }
 
+function BoundaryReviewsTab({ agentId }: { agentId: string }) {
+  const [reviews, setReviews] = useState<BoundaryReviewItem[]>([]);
+  const [tasks, setTasks] = useState<TaskItem[]>([]);
+  const [targets, setTargets] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [resolving, setResolving] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const [reviewResult, taskResult] = await Promise.all([
+        api.memBoundaryReviews(agentId),
+        api.memTasks(agentId, { limit: 200 }),
+      ]);
+      if (reviewResult.ok) setReviews(reviewResult.reviews);
+      if (taskResult.ok) setTasks(taskResult.tasks);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [agentId]);
+
+  useDeferredLoad(load);
+
+  const resolve = async (
+    review: BoundaryReviewItem,
+    action: "assign_current" | "create_new" | "assign_other" | "orphan",
+  ) => {
+    const targetTaskId = targets[review.id];
+    if (action === "assign_other" && !targetTaskId) {
+      setError("请选择目标任务");
+      return;
+    }
+    if (action === "orphan" && !window.confirm("确认将该轮次标记为无任务价值吗？")) return;
+
+    setResolving(review.id);
+    setError("");
+    try {
+      await api.resolveMemBoundaryReview(agentId, review.id, {
+        action,
+        target_task_id: action === "assign_other" ? targetTaskId : undefined,
+      });
+      await load();
+    } catch (resolveError) {
+      setError(resolveError instanceof Error ? resolveError.message : "处理失败");
+    } finally {
+      setResolving(null);
+    }
+  };
+
+  if (loading) {
+    return <div className="flex items-center justify-center py-20"><Loader2 className="w-5 h-5 animate-spin" style={{ color: "var(--accent)" }} /></div>;
+  }
+
+  return (
+    <div className="w-full min-w-0 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <h3 className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>待确认边界</h3>
+          <span className="text-[10px] tabular-nums" style={{ color: "var(--text-tertiary)" }}>{reviews.length}</span>
+        </div>
+        <button onClick={load} className="btn-ghost p-1" type="button" title="刷新"><RefreshCw className="w-3.5 h-3.5" /></button>
+      </div>
+
+      {error && <div className="text-[11px] px-3 py-2 rounded" style={{ color: "var(--danger)", background: "color-mix(in srgb, var(--danger) 10%, transparent)" }}>{error}</div>}
+
+      {reviews.length === 0 ? <EmptyState message="没有待确认的任务边界" /> : (
+        <div className="space-y-3">
+          {reviews.map((review) => {
+            const busy = resolving === review.id;
+            return (
+              <div key={review.id} className="glass-card p-3 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-medium truncate" style={{ color: "var(--text)" }}>{review.currentTaskTitle || "未命名任务"}</div>
+                    <div className="text-[9px] font-mono mt-0.5" style={{ color: "var(--text-tertiary)" }}>{review.turnId}</div>
+                  </div>
+                  <span className="text-[10px] tabular-nums px-1.5 py-0.5 rounded" style={{ color: "var(--warning)", background: "color-mix(in srgb, var(--warning) 12%, transparent)" }}>
+                    置信度 {Math.round(review.confidence * 100)}%
+                  </span>
+                </div>
+
+                {review.currentTaskSummary && (
+                  <div className="space-y-1">
+                    <div className="text-[10px] font-medium" style={{ color: "var(--text-tertiary)" }}>当前任务</div>
+                    <p className="text-[10px] leading-relaxed line-clamp-4" style={{ color: "var(--text-secondary)" }}>{review.currentTaskSummary}</p>
+                  </div>
+                )}
+
+                {review.recentContext.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-[10px] font-medium" style={{ color: "var(--text-tertiary)" }}>最近上下文</div>
+                    <div className="space-y-1">
+                      {review.recentContext.map((chunk) => (
+                        <div key={chunk.id} className="flex gap-2 px-2 py-1.5 rounded" style={{ background: "var(--bg-inset)" }}>
+                          <RoleIcon role={chunk.role} />
+                          <p className="text-[10px] leading-relaxed line-clamp-3 min-w-0" style={{ color: "var(--text-secondary)" }}>{chunk.content}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-1">
+                  <div className="text-[10px] font-medium" style={{ color: "var(--warning)" }}>待确认轮次</div>
+                  {review.pendingChunks.map((chunk) => (
+                    <div key={chunk.id} className="flex gap-2 px-2 py-1.5 rounded" style={{ background: "var(--bg-inset)" }}>
+                      <RoleIcon role={chunk.role} />
+                      <p className="text-[10px] leading-relaxed whitespace-pre-wrap min-w-0" style={{ color: "var(--text)" }}>{chunk.content}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="text-[10px]" style={{ color: "var(--text-tertiary)" }}>
+                  {review.reason || "模型未给出有效判断"} · 已重试 {review.retryCount} 次 · {formatTs(review.createdAt)}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5 pt-1" style={{ borderTop: "1px solid var(--border)" }}>
+                  <button disabled={busy} onClick={() => resolve(review, "assign_current")} className="btn-ghost px-2 py-1.5 text-[10px] flex items-center gap-1 disabled:opacity-50" type="button">
+                    <Link className="w-3 h-3" />归入当前
+                  </button>
+                  <button disabled={busy} onClick={() => resolve(review, "create_new")} className="btn-ghost px-2 py-1.5 text-[10px] flex items-center gap-1 disabled:opacity-50" type="button">
+                    <Plus className="w-3 h-3" />创建新任务
+                  </button>
+                  <div className="flex items-center gap-1 min-w-[190px] flex-1">
+                    <select value={targets[review.id] || ""} onChange={(event) => setTargets(current => ({ ...current, [review.id]: event.target.value }))} className="input text-[10px] py-1 px-1.5 min-w-0 flex-1">
+                      <option value="">选择其他任务</option>
+                      {tasks.filter(task => task.id !== review.currentTaskId).map(task => <option key={task.id} value={task.id}>{task.title || task.id}</option>)}
+                    </select>
+                    <button disabled={busy || !targets[review.id]} onClick={() => resolve(review, "assign_other")} className="btn-ghost p-1.5 disabled:opacity-40" type="button" title="归入所选任务"><FolderInput className="w-3.5 h-3.5" /></button>
+                  </div>
+                  <button disabled={busy} onClick={() => resolve(review, "orphan")} className="btn-ghost p-1.5 disabled:opacity-50" type="button" title="标记为无任务价值">
+                    {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ArchiveX className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ================================================================
    Tab: 技能 (Skills)
    ================================================================ */
@@ -402,7 +567,7 @@ function SkillsTab({ agentId }: { agentId: string }) {
   useDeferredLoad(load);
 
   return (
-    <div className="space-y-3">
+    <div className="w-full min-w-0 space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>技能列表</h3>
         <div className="flex items-center gap-2">
@@ -487,7 +652,7 @@ function SearchTab({ agentId }: { agentId: string }) {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="w-full min-w-0 space-y-4">
       {/* Search bar */}
       <div className="flex gap-2">
         <div className="flex-1 relative">
@@ -599,13 +764,136 @@ function SearchTab({ agentId }: { agentId: string }) {
 }
 
 /* ================================================================
+   Tab: Skill 进化 (human-controlled stages)
+   ================================================================ */
+
+const EVOLUTION_STAGES = [
+  ["created", "待导出"], ["data_exported", "数据已导出"],
+  ["dataset_confirmed", "数据集已确认"], ["candidate_generated", "Candidate 已生成"],
+  ["candidate_confirmed", "Candidate 已确认"], ["dev_evaluated", "开发集已评估"],
+  ["revision_pending", "等待修改"], ["regression_verified", "回归已验证"],
+  ["holdout_verified", "独立集已验证"], ["approved", "已批准"],
+  ["published", "已发布"], ["abandoned", "已放弃"],
+] as const;
+
+function EvolutionTab({ agentId }: { agentId: string }) {
+  const [items, setItems] = useState<any[]>([]);
+  const [family, setFamily] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [traceRows, setTraceRows] = useState<any[]>([]);
+  const [traceTaskId, setTraceTaskId] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await api.memEvolutionTasks(agentId);
+      if (result.ok) setItems(result.tasks || []);
+    } catch { /* keep the last visible state */ }
+    setLoading(false);
+  }, [agentId]);
+
+  useDeferredLoad(load);
+
+  const create = async () => {
+    const value = family.trim();
+    if (!value) return;
+    setBusy(true);
+    try {
+      await api.createMemEvolutionTask(agentId, value);
+      setFamily("");
+      await load();
+    } finally { setBusy(false); }
+  };
+
+  const advance = async (item: any, stage: string) => {
+    setBusy(true);
+    try {
+      await api.updateMemEvolutionStage(agentId, item.id, stage);
+      await load();
+    } finally { setBusy(false); }
+  };
+
+  const advanceStage = async (item: any, stage: string) => {
+    if (item.stage === "created" && stage === "data_exported") {
+      setBusy(true);
+      try { await api.exportMemEvolutionTask(agentId, item.id, selected); setSelected([]); setTraceTaskId(null); setMessage(`已导出 ${selected.length} 条轨迹`); await load(); }
+      finally { setBusy(false); }
+      return;
+    }
+    await advance(item, stage);
+  };
+
+  const openTracePicker = async (item: any) => {
+    setBusy(true); setMessage("");
+    try {
+      const result = await api.memEvolutionTraces(agentId, item.id);
+      setTraceRows(result.traces || []); setTraceTaskId(item.id); setSelected([]);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "加载轨迹失败"); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="w-full min-w-0 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>Skill 进化</h3>
+          <p className="text-[10px] mt-1" style={{ color: "var(--text-tertiary)" }}>每个阶段单独确认，不会自动跑完整流程</p>
+        </div>
+        <button onClick={load} className="btn-ghost p-1" type="button"><RefreshCw className="w-3.5 h-3.5" /></button>
+      </div>
+      <div className="flex gap-2">
+        <input className="input text-xs flex-1" value={family} onChange={(e) => setFamily(e.target.value)} placeholder="输入任务族名称" />
+        <button className="btn-ghost px-2" type="button" onClick={create} disabled={busy || !family.trim()}><Plus className="w-3.5 h-3.5" /> 新建</button>
+      </div>
+      {message && <div className="text-[10px] px-2 py-1 rounded" style={{ background: "var(--accent-bg)", color: "var(--accent)" }}>{message}</div>}
+      {loading ? <div className="flex justify-center py-12"><Loader2 className="w-4 h-4 animate-spin" style={{ color: "var(--accent)" }} /></div> : items.length === 0 ? <EmptyState message="暂无进化任务" /> : (
+        <div className="space-y-2">
+          {items.map((item) => {
+            const currentIndex = EVOLUTION_STAGES.findIndex(([key]) => key === item.stage);
+            const next = EVOLUTION_STAGES[currentIndex + 1];
+            return (
+              <div key={item.id} className="glass-card p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <GitBranch className="w-3.5 h-3.5" style={{ color: "var(--accent)" }} />
+                  <span className="text-xs font-medium" style={{ color: "var(--text)" }}>{item.title}</span>
+                  <span className="ml-auto text-[10px]" style={{ color: "var(--accent)" }}>{EVOLUTION_STAGES[currentIndex]?.[1] || item.stage}</span>
+                </div>
+                <div className="flex items-center gap-1 overflow-x-auto">
+                  {EVOLUTION_STAGES.slice(0, -1).map(([key, label], index) => <span key={key} className="text-[9px] whitespace-nowrap" style={{ color: index <= currentIndex ? "var(--accent)" : "var(--text-tertiary)" }}>{index > 0 && " → "}{label}</span>)}
+                </div>
+                {item.stage === "created" && <button className="btn-ghost text-[10px] px-2 py-1" type="button" disabled={busy} onClick={() => openTracePicker(item)}>选择轨迹</button>}
+                {item.stage !== "created" && item.stage !== "abandoned" && <span className="text-[10px]" style={{ color: "var(--text-tertiary)" }}>该阶段执行器尚未接入</span>}
+                {traceTaskId === item.id && item.stage === "created" && (
+                  <div className="border-t pt-2 space-y-2" style={{ borderColor: "var(--border)" }}>
+                    <div className="flex items-center justify-between"><span className="text-[10px] font-medium" style={{ color: "var(--text-secondary)" }}>选择要导出的轨迹</span><span className="text-[10px]" style={{ color: "var(--accent)" }}>已选 {selected.length} 条</span></div>
+                    <div className="max-h-48 overflow-y-auto space-y-1">
+                      {traceRows.length === 0 ? <div className="text-[10px] py-3" style={{ color: "var(--text-tertiary)" }}>暂无可选轨迹</div> : traceRows.map((row) => <label key={row.trace_id} className="flex gap-2 p-2 rounded cursor-pointer" style={{ background: "var(--bg-inset)" }}><input type="checkbox" checked={selected.includes(row.trace_id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, row.trace_id] : current.filter((id) => id !== row.trace_id))} /><span className="min-w-0 text-[10px]" style={{ color: "var(--text-secondary)" }}><b style={{ color: "var(--text)" }}>{row.title || row.trace_id}</b><br />{row.input_preview}<br /><span style={{ color: "var(--text-tertiary)" }}>{row.category || "未分类"} · {row.created_at || "无时间"}</span></span></label>)}
+                    </div>
+                    <button className="btn-ghost text-[10px] px-2 py-1" type="button" disabled={busy || selected.length === 0} onClick={() => advanceStage(item, "data_exported")}>确认导出并进入：数据已导出</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================
    Main Modal
    ================================================================ */
 
 const TABS = [
   { key: "overview", label: "概览", icon: BarChart3 },
   { key: "tasks", label: "任务", icon: ListTodo },
+  { key: "reviews", label: "待确认", icon: CircleHelp },
   { key: "skills", label: "技能", icon: Sparkles },
+  { key: "evolution", label: "进化", icon: GitBranch },
   { key: "search", label: "记忆", icon: Search },
 ] as const;
 
@@ -633,7 +921,7 @@ export default function MemoryModal() {
         onClick={() => setShowMemoryModal(false)} aria-hidden />
 
       {/* Modal */}
-      <div className="fixed inset-4 sm:inset-8 z-[61] flex flex-col rounded-2xl overflow-hidden animate-scale-in"
+      <div className="fixed inset-4 sm:inset-8 z-[61] flex w-auto min-w-0 flex-col rounded-2xl overflow-hidden animate-scale-in"
         style={{
           background: "var(--bg-elevated)",
           border: "1px solid var(--border)",
@@ -653,7 +941,7 @@ export default function MemoryModal() {
         </div>
 
         {/* Tab Bar */}
-        <div className="flex items-center px-5 gap-1 flex-shrink-0"
+        <div className="flex w-full min-w-0 items-center px-5 gap-1 flex-shrink-0 overflow-x-auto"
           style={{ borderBottom: "1px solid var(--border)" }}>
           {TABS.map((t) => (
             <button key={t.key} type="button" onClick={() => setTab(t.key)}
@@ -669,10 +957,12 @@ export default function MemoryModal() {
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-5">
+        <div className={`flex w-full min-w-0 flex-1 overflow-y-auto ${tab === "evolution" ? "p-0" : "p-5"}`}>
           {tab === "overview" && <OverviewTab key={currentAgentId} agentId={currentAgentId} />}
           {tab === "tasks" && <TasksTab key={currentAgentId} agentId={currentAgentId} />}
+          {tab === "reviews" && <BoundaryReviewsTab key={currentAgentId} agentId={currentAgentId} />}
           {tab === "skills" && <SkillsTab key={currentAgentId} agentId={currentAgentId} />}
+          {tab === "evolution" && <SkillEvolutionWorkspace key={currentAgentId} agentId={currentAgentId} />}
           {tab === "search" && <SearchTab key={currentAgentId} agentId={currentAgentId} />}
         </div>
       </div>

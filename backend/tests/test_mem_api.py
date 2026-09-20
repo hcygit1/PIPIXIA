@@ -14,7 +14,16 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from api.dependencies import get_agent_manager
-from api.mem_api import mem_memories, mem_skills, mem_stats, mem_tasks, router
+from api.mem_api import (
+    BoundaryReviewResolution,
+    mem_boundary_reviews,
+    mem_memories,
+    mem_skills,
+    mem_stats,
+    mem_tasks,
+    resolve_mem_boundary_review,
+    router,
+)
 
 
 class MemoryApiTests(unittest.IsolatedAsyncioTestCase):
@@ -92,6 +101,58 @@ class MemoryApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {item["name"] for item in operation.get("parameters", [])},
             {"agent_id"},
+        )
+
+    async def test_boundary_review_list_includes_context_and_pending_turn(self) -> None:
+        from types import SimpleNamespace
+
+        review = SimpleNamespace(
+            id="review-1", session_key="session-1", current_task_id="task-1",
+            turn_id="turn-2", confidence=0.3, reason="uncertain",
+            retry_count=2, created_at=100,
+        )
+        store = Mock()
+        store.list_pending_boundary_reviews.return_value = [review]
+        store.get_task.return_value = SimpleNamespace(
+            title="数据库修复", boundary_summary="正在检查端口", summary="",
+        )
+        store.get_chunks_by_task.return_value = [
+            SimpleNamespace(id="old", role="user", content="检查数据库"),
+        ]
+        store.get_chunks_by_turn.return_value = [
+            SimpleNamespace(id="new", role="user", content="鱼香肉丝怎么做"),
+        ]
+        manager = Mock(mem_stores={"main": store})
+
+        result = await mem_boundary_reviews(
+            agent_id="main", limit=100, agent_manager=manager,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reviews"][0]["pendingChunks"][0]["id"], "new")
+        self.assertEqual(result["reviews"][0]["currentTaskSummary"], "正在检查端口")
+
+    async def test_boundary_review_resolution_delegates_to_processor(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        processor = SimpleNamespace(resolve_boundary_review=AsyncMock(return_value=SimpleNamespace(
+            id="review-1", status="resolved", resolution="create_new",
+            target_task_id="task-2",
+        )))
+        manager = Mock(mem_task_processors={"main": processor})
+
+        result = await resolve_mem_boundary_review(
+            "review-1",
+            BoundaryReviewResolution(action="create_new", note="主题不同"),
+            agent_id="main",
+            agent_manager=manager,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["targetTaskId"], "task-2")
+        processor.resolve_boundary_review.assert_awaited_once_with(
+            "review-1", action="create_new", target_task_id=None, note="主题不同",
         )
 
 
