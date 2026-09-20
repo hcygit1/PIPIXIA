@@ -77,7 +77,7 @@ async def distill(
         store=store,
         embedder=_EvalEmbedder(),
         llm_base_url=os.getenv("PIPIXIA_LLM_BASE_URL", ""),
-        llm_api_key=os.getenv("PIPIXIA_LLM_API_KEY", ""),
+        llm_api_key=os.getenv("OPENAI_API_KEY", ""),
         llm_model=os.getenv("PIPIXIA_LLM_MODEL", "gpt-4o-mini"),
         skill_store_dir=str(family_dir),
         min_chunks_for_eval=6,
@@ -148,7 +148,7 @@ def _bailian_agent_config() -> dict[str, Any]:
     )
     return {
         "name": "PIPIXIA Bailian (OpenAI-compatible)",
-        "env": ["PIPIXIA_LLM_API_KEY", "PIPIXIA_LLM_BASE_URL"],
+        "env": ["OPENAI_API_KEY", "PIPIXIA_LLM_BASE_URL"],
         "runtime_deps": "",
         "install": install,
         "run": (
@@ -170,7 +170,7 @@ def _require_bailian_env() -> None:
     _normalize_bailian_env()
     missing = [
         name
-        for name in ("PIPIXIA_LLM_API_KEY", "PIPIXIA_LLM_BASE_URL")
+        for name in ("OPENAI_API_KEY", "PIPIXIA_LLM_BASE_URL")
         if not os.getenv(name, "").strip()
     ]
     if missing:
@@ -227,6 +227,7 @@ class _Utf8SubprocessProxy:
 
     def __init__(self, delegate: Any):
         self._delegate = delegate
+        self._output = getattr(sys.stdout, "_real", sys.stdout)
         self._temporary_mounts: list[Path] = []
         atexit.register(self._cleanup)
 
@@ -264,7 +265,48 @@ class _Utf8SubprocessProxy:
         if kwargs.get("text") or kwargs.get("universal_newlines"):
             kwargs.setdefault("encoding", "utf-8")
             kwargs.setdefault("errors", "replace")
+        command = args[0] if args else kwargs.get("args")
+        if (
+            isinstance(command, (list, tuple))
+            and len(command) >= 2
+            and str(command[0]).lower() == "docker"
+            and str(command[1]).lower() == "build"
+            and kwargs.get("capture_output")
+        ):
+            return self._run_streaming(command, kwargs)
         return self._delegate.run(*args, **kwargs)
+
+    def _run_streaming(self, command: Any, options: dict[str, Any]) -> Any:
+        kwargs = dict(options)
+        kwargs.pop("capture_output", None)
+        check = bool(kwargs.pop("check", False))
+        input_value = kwargs.pop("input", None)
+        kwargs["stdout"] = self._delegate.PIPE
+        kwargs["stderr"] = self._delegate.STDOUT
+        kwargs["stdin"] = self._delegate.PIPE if input_value is not None else None
+        if kwargs.get("text") or kwargs.get("universal_newlines"):
+            kwargs.setdefault("encoding", "utf-8")
+            kwargs.setdefault("errors", "replace")
+
+        process = self._delegate.Popen(command, **kwargs)
+        if input_value is not None and process.stdin is not None:
+            process.stdin.write(input_value)
+            process.stdin.close()
+        chunks: list[str] = []
+        if process.stdout is not None:
+            for line in iter(process.stdout.readline, ""):
+                if not line:
+                    break
+                chunks.append(line)
+                self._output.write(line)
+                self._output.flush()
+            process.stdout.close()
+        returncode = process.wait()
+        output = "".join(chunks)
+        result = self._delegate.CompletedProcess(command, returncode, stdout=output, stderr="")
+        if check and returncode:
+            raise self._delegate.CalledProcessError(returncode, command, output=output, stderr="")
+        return result
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._delegate, name)
@@ -286,7 +328,11 @@ def _patch_empty_skill_build_context(official: Any) -> None:
         build_env = original_prepare(env_dir)
         dockerfile = build_env / "Dockerfile"
         if dockerfile.exists():
-            dockerfile.write_bytes(dockerfile.read_bytes().replace(b"\r\n", b"\n"))
+            dockerfile.write_bytes(
+                dockerfile.read_bytes()
+                .replace(b"\r\n", b"\n")
+                .replace(b"wget -q \\\n", b"wget --progress=dot:giga \\\n")
+            )
         skills_dir = build_env / "skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
         (skills_dir / ".pipixia-empty").write_text("", encoding="utf-8")
@@ -304,22 +350,33 @@ def evaluate(
     family: str,
     skill_root: Path,
     active_skill_root: Path | None = None,
+    human_authored_skill_root: Path | None = None,
     agent: str,
     model: str,
     repeats: int,
     max_steps: int,
     trials_dir: Path,
     dry_run: bool,
+    instance_ids: list[str] | None = None,
 ) -> int:
     benchmark_root = Path(manifest["benchmark_root"])
     skill_root = skill_root.resolve()
     active_skill_root = active_skill_root.resolve() if active_skill_root else None
+    human_authored_skill_root = human_authored_skill_root.resolve() if human_authored_skill_root else None
     trials_dir = trials_dir.resolve()
     entry = next(item for item in manifest["families"] if item["family"] == family)
-    task_ids = [
-        f"{family}/{item['instance_id']}"
-        for item in entry["evaluation_instances"]
+    selected = set(instance_ids or [])
+    evaluation_instances = [
+        item for item in entry["evaluation_instances"]
+        if not selected or str(item["instance_id"]) in selected
     ]
+    if selected:
+        known = {str(item["instance_id"]) for item in evaluation_instances}
+        missing = sorted(selected - known)
+        if missing:
+            raise ValueError("SkillLearnBench evaluation instances not found: " + ", ".join(missing))
+    if not evaluation_instances:
+        raise ValueError(f"no SkillLearnBench evaluation instances selected: {family}")
     official = _load_official_evaluator(benchmark_root)
     _patch_official_subprocess_encoding(official)
     _patch_empty_skill_build_context(official)
@@ -327,7 +384,13 @@ def evaluate(
         _require_bailian_env()
 
     exit_code = 0
-    for item in entry["evaluation_instances"]:
+    skill_paths = [None]
+    if active_skill_root is not None:
+        skill_paths.append(active_skill_root)
+    if human_authored_skill_root is not None:
+        skill_paths.append(human_authored_skill_root)
+    skill_paths.append(skill_root)
+    for item in evaluation_instances:
         instance_id = item["instance_id"]
         task_id = f"{family}/{instance_id}"
         if agent == "pipixia-bailian":
@@ -338,8 +401,7 @@ def evaluate(
                 task_root=isolated_root,
                 agent_id=agent,
                 model=model,
-                # Official evaluator labels these in order: without, active, candidate.
-                skill_paths=[None, active_skill_root, skill_root],
+                skill_paths=skill_paths,
                 repeats=repeats,
                 max_steps=max_steps,
                 max_workers=1,
@@ -391,10 +453,40 @@ def evaluate_seed(
 
 def summarize_trials(trials_dir: Path) -> dict[str, Any]:
     groups: dict[str, list[dict[str, Any]]] = {}
+    cases: list[dict[str, Any]] = []
     for path in trials_dir.rglob("result.json"):
         result = json.loads(path.read_text(encoding="utf-8"))
         config = _normalize_variant_name(result.get("skill_config"))
         groups.setdefault(config, []).append(result)
+        raw_passed = result.get("passed")
+        passed = raw_passed if isinstance(raw_passed, bool) else None
+        relative_trial = str(path.parent.relative_to(trials_dir))
+        sample_id = str(
+            result.get("task_id") or result.get("instance_id") or result.get("task") or relative_trial
+        )
+        usage = result.get("token_usage") or {}
+        case_tokens = (
+            int(usage.get("total_tokens") or 0)
+            if usage.get("total_tokens") is not None
+            else int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+        )
+        cases.append({
+            "sample_id": sample_id,
+            "variant": config,
+            "passed": passed,
+            "external_failure": passed is None,
+            "failure_type": (
+                str(result.get("failure_type") or "external_failure") if passed is None else None
+            ),
+            "error": str(result.get("error") or "") or None,
+            "trial_path": relative_trial,
+            "tokens": case_tokens,
+            "agent_exit": result.get("agent_exit"),
+            "agent_timed_out": bool(result.get("agent_timed_out", False)),
+            "verifier_exit": result.get("verifier_exit"),
+            "duration_ms": float(result.get("duration_ms") or result.get("duration") or 0),
+            "tool_calls": int(result.get("tool_calls") or result.get("tool_call_count") or 0),
+        })
     systems = []
     for config, rows in sorted(groups.items()):
         evaluated_rows = [row for row in rows if isinstance(row.get("passed"), bool)]
@@ -417,8 +509,15 @@ def summarize_trials(trials_dir: Path) -> dict[str, Any]:
             "pass_rate": passed / len(evaluated_rows) if evaluated_rows else 0.0,
             "total_tokens": token_total,
             "avg_tokens": token_total / len(rows),
+            "avg_duration_ms": sum(float(row.get("duration_ms") or 0) for row in rows) / len(rows),
+            "avg_tool_calls": sum(int(row.get("tool_calls") or 0) for row in rows) / len(rows),
+            "stability_sample_count": len(rows),
         })
-    return {"trials_dir": str(trials_dir), "systems": systems}
+    return {
+        "trials_dir": str(trials_dir),
+        "systems": systems,
+        "cases": sorted(cases, key=lambda row: (row["sample_id"], row["variant"], row["trial_path"])),
+    }
 
 
 def _normalize_variant_name(value: Any) -> str:
@@ -428,7 +527,9 @@ def _normalize_variant_name(value: Any) -> str:
         return "without_skill"
     if "candidate" in raw or "skill-" in raw:
         return "candidate_skill"
-    if "active" in raw or "human_authored" in raw:
+    if "human_authored" in raw:
+        return "human_authored"
+    if "active" in raw:
         return "active_skill"
     return raw
 
@@ -478,6 +579,7 @@ def main() -> None:
     run_eval.add_argument("--repeats", type=int, default=1)
     run_eval.add_argument("--max-steps", type=int, default=100)
     run_eval.add_argument("--trials-dir", type=Path, required=True)
+    run_eval.add_argument("--instances", nargs="*", help="只评估指定实例 ID")
     run_eval.add_argument("--dry-run", action="store_true")
 
     report = sub.add_parser("report")
@@ -512,6 +614,7 @@ def main() -> None:
             max_steps=args.max_steps,
             trials_dir=args.trials_dir,
             dry_run=args.dry_run,
+            instance_ids=args.instances,
         ))
 
     if args.command == "seed":

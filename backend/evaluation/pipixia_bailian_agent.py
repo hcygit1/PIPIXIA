@@ -201,7 +201,7 @@ def run(instruction: str, *, model: str, max_steps: int) -> int:
     from openai import OpenAI
 
     client = OpenAI(
-        api_key=os.environ["PIPIXIA_LLM_API_KEY"],
+        api_key=os.environ["OPENAI_API_KEY"],
         base_url=os.environ["PIPIXIA_LLM_BASE_URL"],
     )
     messages: list[dict[str, Any]] = [

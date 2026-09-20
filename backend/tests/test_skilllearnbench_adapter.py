@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import io
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -136,7 +138,7 @@ class SkillLearnBenchAdapterTests(unittest.TestCase):
 
         self.assertEqual(
             config["env"],
-            ["PIPIXIA_LLM_API_KEY", "PIPIXIA_LLM_BASE_URL"],
+            ["OPENAI_API_KEY", "PIPIXIA_LLM_BASE_URL"],
         )
         self.assertIn("bailian_agent.py", config["install"])
         self.assertIn("--max-steps {max_steps}", config["run"])
@@ -146,7 +148,7 @@ class SkillLearnBenchAdapterTests(unittest.TestCase):
         from evaluation.skilllearnbench_runner import _require_bailian_env
 
         with patch.dict(os.environ, {
-            "PIPIXIA_LLM_API_KEY": "test-key",
+            "OPENAI_API_KEY": "test-key",
             "PIPIXIA_LLM_BASE_UR": "https://example.test/v1",
         }, clear=True):
             _require_bailian_env()
@@ -211,6 +213,37 @@ class SkillLearnBenchAdapterTests(unittest.TestCase):
             self.assertNotEqual(mounted.resolve(), source.resolve())
             self.assertEqual((mounted / "test.sh").read_bytes(), b"#!/bin/bash\necho ok\n")
             self.assertEqual(script.read_bytes(), b"#!/bin/bash\r\necho ok\r\n")
+
+    def test_docker_build_output_is_streamed_and_preserved(self) -> None:
+        from evaluation.skilllearnbench_runner import _Utf8SubprocessProxy
+
+        class Output:
+            def __init__(self):
+                self.lines = iter(["step 1\n", "step 2\n", ""])
+
+            def readline(self):
+                return next(self.lines)
+
+            def close(self):
+                pass
+
+        class Process:
+            stdin = None
+            stdout = Output()
+
+            @staticmethod
+            def wait():
+                return 0
+
+        proxy = _Utf8SubprocessProxy(subprocess)
+        streamed = io.StringIO()
+        proxy._output = streamed
+        with patch.object(subprocess, "Popen", return_value=Process()):
+            result = proxy.run(["docker", "build", "."], capture_output=True, text=True)
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "step 1\nstep 2\n")
+        self.assertEqual(streamed.getvalue(), result.stdout)
 
     def test_bailian_image_scope_is_unique_per_instance(self) -> None:
         from evaluation.skilllearnbench_runner import _set_bailian_image_scope
