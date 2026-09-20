@@ -738,7 +738,10 @@ export default function ConfigModal() {
 
               {/* Chat */}
               <Section title="对话设置" icon={<Clock className="w-3.5 h-3.5" style={{ color: "var(--text-secondary)" }} />} defaultOpen={false}>
-                <Input label="超时时间 (秒)" value={String(config.chat?.timeoutSeconds ?? 120)} onChange={(v) => handleUpdate("chat.timeoutSeconds", parseInt(v) || 120)} type="number" hint="0 表示无超时" />
+                <Input label="流空闲超时（秒）" value={String(config.chat?.timeoutSeconds ?? 120)} onChange={(v) => {
+                  const seconds = Number.parseInt(v, 10);
+                  handleUpdate("chat.timeoutSeconds", Number.isNaN(seconds) ? 120 : Math.max(0, seconds));
+                }} type="number" hint="收到新事件会自动续期；0 表示不限制" />
               </Section>
 
               {/* Memory */}
@@ -793,7 +796,6 @@ export default function ConfigModal() {
                 <div className="pt-2 border-t border-[var(--border)]">
                   <p className="text-xs font-medium mb-2" style={{ color: "var(--text-secondary)" }}>Skill Evolution</p>
                   <Toggle label="启用 Skill 提炼" value={mem.skill_evolution?.enabled !== false} onChange={(v) => handleUpdate("mem.skill_evolution.enabled", v)} />
-                  <Toggle label="自动评估" value={mem.skill_evolution?.auto_evaluate !== false} onChange={(v) => handleUpdate("mem.skill_evolution.auto_evaluate", v)} />
                   <Toggle label="自动安装" value={mem.skill_evolution?.auto_install ?? false} onChange={(v) => handleUpdate("mem.skill_evolution.auto_install", v)} />
                   <div className="grid grid-cols-2 gap-2">
                     <Input label="最少评估 chunk 数" value={String(mem.skill_evolution?.min_chunks_for_eval ?? 6)} onChange={(v) => handleUpdate("mem.skill_evolution.min_chunks_for_eval", parseInt(v) || 6)} type="number" />

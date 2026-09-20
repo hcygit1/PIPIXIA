@@ -86,13 +86,14 @@ async function readErrorMessage(resp: Response): Promise<string> {
   }
 }
 
-/** Get chat timeout config. timeoutSeconds=0 means no timeout */
+/** Get stream inactivity timeout. timeoutSeconds=0 disables it. */
 export async function fetchChatTimeout(): Promise<{ timeoutSeconds: number }> {
   const resp = await fetch(`${API_BASE}/config/chat`);
   return resp.json();
 }
 
 const TURN_POLL_MS = 500;
+const TURN_STREAM_RECONNECT_MS = 500;
 
 export interface ChatSubmitResponse {
   turn_id: string;
@@ -169,7 +170,8 @@ export async function waitUntilTurnRunning(turnId: string, signal?: AbortSignal)
 async function consumeSseStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   onEvent: (event: SSEEvent) => void,
-) {
+  onActivity?: () => void,
+): Promise<boolean> {
   const decoder = new TextDecoder();
   let buffer = "";
   while (true) {
@@ -181,13 +183,15 @@ async function consumeSseStream(
           try {
             const parsed = JSON.parse(remaining.slice(6)) as SSEEvent;
             onEvent(parsed);
+            return parsed.type === "done" || parsed.type === "error" || parsed.type === "aborted";
           } catch {
             // ignore
           }
         }
       }
-      break;
+      return false;
     }
+    onActivity?.();
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n");
     buffer = lines.pop() || "";
@@ -212,7 +216,7 @@ async function consumeSseStream(
       } catch {
         // ignore
       }
-      break;
+      return true;
     }
   }
 }
@@ -223,38 +227,77 @@ export async function streamTurn(
   opts?: { signal?: AbortSignal; timeoutMs?: number },
 ): Promise<void> {
   const { signal: userSignal, timeoutMs } = opts ?? {};
-  const controller = new AbortController();
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  let timeoutFired = false;
-  if (timeoutMs != null && timeoutMs > 0) {
-    timeoutId = setTimeout(() => {
-      timeoutFired = true;
-      controller.abort();
-    }, timeoutMs);
-  }
-  if (userSignal) {
-    userSignal.addEventListener("abort", () => {
-      if (timeoutId) clearTimeout(timeoutId);
-      controller.abort();
-    });
-  }
-  const effectiveSignal = controller.signal;
-
-  try {
-    const resp = await fetch(`${API_BASE}/chat/turn/${encodeURIComponent(turnId)}/stream`, {
-      signal: effectiveSignal,
-    });
-    if (!resp.ok) throw new Error(`Stream failed: ${resp.status}`);
-    const reader = resp.body?.getReader();
-    if (!reader) throw new Error("No response body");
-    await consumeSseStream(reader, onEvent);
-  } catch (e) {
-    if (timeoutFired && e instanceof Error && e.name === "AbortError") {
-      throw new Error(`Request timeout (${Math.round((timeoutMs ?? 0) / 1000)}s)`);
+  while (true) {
+    if (userSignal?.aborted) {
+      const error = new Error("Aborted");
+      error.name = "AbortError";
+      throw error;
     }
-    throw e;
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
+
+    const controller = new AbortController();
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let timeoutFired = false;
+    let streamError: unknown = null;
+    let terminalEventReceived = false;
+
+    const resetInactivityTimeout = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (timeoutMs != null && timeoutMs > 0) {
+        timeoutId = setTimeout(() => {
+          timeoutFired = true;
+          controller.abort();
+        }, timeoutMs);
+      }
+    };
+    const abortForUser = () => controller.abort();
+    userSignal?.addEventListener("abort", abortForUser, { once: true });
+    resetInactivityTimeout();
+
+    try {
+      const resp = await fetch(`${API_BASE}/chat/turn/${encodeURIComponent(turnId)}/stream`, {
+        signal: controller.signal,
+      });
+      if (!resp.ok) throw new Error(`Stream failed: ${resp.status}`);
+      const reader = resp.body?.getReader();
+      if (!reader) throw new Error("No response body");
+      terminalEventReceived = await consumeSseStream(reader, onEvent, resetInactivityTimeout);
+    } catch (error) {
+      streamError = error;
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      userSignal?.removeEventListener("abort", abortForUser);
+    }
+
+    if (userSignal?.aborted) {
+      if (streamError instanceof Error && streamError.name === "AbortError") throw streamError;
+      const error = new Error("Aborted");
+      error.name = "AbortError";
+      throw error;
+    }
+    if (terminalEventReceived) return;
+
+    try {
+      const status = await getTurnStatus(turnId);
+      if (status.status === "done" || status.status === "cancelled") return;
+      if (status.status === "error") {
+        throw new Error(status.error || "Turn failed");
+      }
+      if (status.status === "running" || status.status === "queued") {
+        await new Promise(resolve => setTimeout(resolve, TURN_STREAM_RECONNECT_MS));
+        continue;
+      }
+    } catch (statusError) {
+      if (streamError) {
+        if (timeoutFired && streamError instanceof Error && streamError.name === "AbortError") {
+          throw new Error(`Request inactivity timeout (${Math.round((timeoutMs ?? 0) / 1000)}s)`);
+        }
+        throw streamError;
+      }
+      throw statusError;
+    }
+
+    if (streamError) throw streamError;
+    throw new Error("Turn stream ended before the backend reached a terminal state");
   }
 }
 
@@ -745,6 +788,32 @@ export async function memTasks(agentId: string, params?: { status?: string; limi
 export async function memTaskDetail(agentId: string, taskId: string): Promise<any> {
   const q = new URLSearchParams({ agent_id: agentId });
   const r = await fetch(`${API_BASE}/mem/task/${taskId}?${q}`);
+  return r.json();
+}
+
+export async function memBoundaryReviews(agentId: string, limit = 100): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId, limit: String(limit) });
+  const r = await fetch(`${API_BASE}/mem/boundary-reviews?${q}`);
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function resolveMemBoundaryReview(
+  agentId: string,
+  reviewId: string,
+  input: {
+    action: "assign_current" | "create_new" | "assign_other" | "orphan";
+    target_task_id?: string;
+    note?: string;
+  },
+): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/boundary-reviews/${encodeURIComponent(reviewId)}/resolve?${q}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
   return r.json();
 }
 
