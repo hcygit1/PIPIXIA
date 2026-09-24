@@ -866,8 +866,29 @@ export async function createMemEvolutionTask(
   return r.json();
 }
 
+export async function setMemEvolutionTaskFamily(agentId: string, taskId: string, taskFamily: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId, task_family: taskFamily });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/family?${q}`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function deleteMemEvolutionTask(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}?${q}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
 export async function memEvolutionSkillLearnBenchFamilies(): Promise<any> {
   const r = await fetch(`${API_BASE}/mem/evolution/skilllearnbench/families`);
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function memEvolutionLangfuseSessions(agentId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/langfuse/sessions?${q}`);
   if (!r.ok) throw new Error(await readErrorMessage(r));
   return r.json();
 }
@@ -912,6 +933,13 @@ export async function memEvolutionTraces(
   if (params?.sessionId) q.set("session_id", params.sessionId);
   if (params?.name) q.set("name", params.name);
   const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/traces?${q}`);
+  if (!r.ok) throw new Error(await readErrorMessage(r));
+  return r.json();
+}
+
+export async function memEvolutionTraceDetail(agentId: string, taskId: string, traceId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/evolution/tasks/${encodeURIComponent(taskId)}/traces/${encodeURIComponent(traceId)}?${q}`);
   if (!r.ok) throw new Error(await readErrorMessage(r));
   return r.json();
 }

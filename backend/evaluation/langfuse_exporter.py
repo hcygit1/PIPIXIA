@@ -218,7 +218,7 @@ def fetch_langfuse_traces_by_ids(client: Any, trace_ids: Iterable[str]) -> list[
     return result
 
 
-def trace_preview(trace: Any) -> dict[str, Any]:
+def trace_preview(trace: Any, *, include_observations: bool = False) -> dict[str, Any]:
     """Return a compact, redacted row suitable for manual selection."""
     sample = trace_to_sample(trace)
     metadata = _metadata(trace)
@@ -230,15 +230,116 @@ def trace_preview(trace: Any) -> dict[str, Any]:
         title = str(metadata.get("task_title") or metadata.get("title") or "")
         preview_source = task_snapshot
     output = _redact(_value(trace, "output", _value(trace, "result", None)))
-    return {
+    observations = _value(trace, "observations", [])
+    message_values = [task_snapshot, observations]
+    user_messages = _message_contents(message_values, {"human", "user"})
+    assistant_messages = _message_contents(message_values, {"ai", "assistant"})
+    goal = user_messages[-1][:240] if user_messages else _goal_preview(task_snapshot, metadata)
+    result = {
         "trace_id": str(_value(trace, "id", "")),
         "sample_id": sample["sample_id"],
         "title": title,
+        "goal": goal,
+        "user_message": user_messages[-1] if user_messages else "",
+        "assistant_message": assistant_messages[-1] if assistant_messages else "",
         "task_family": sample.get("task_family"),
         "category": sample.get("category"),
         "session_id": str(metadata.get("langfuse_session_id") or _value(trace, "session_id", "") or ""),
         "created_at": sample.get("created_at"),
-        "input_preview": json.dumps(preview_source, ensure_ascii=False)[:500],
-        "output_preview": json.dumps(output, ensure_ascii=False)[:500],
+        "input_preview": json.dumps(preview_source, ensure_ascii=False, default=str),
+        "output_preview": json.dumps(output, ensure_ascii=False, default=str),
         "skill_names": metadata.get("skill_names") or [],
+        "tool_call_count": len(_value(trace, "observations", []) or []) if isinstance(_value(trace, "observations", []), list) else 0,
     }
+    if include_observations:
+        result["observations_full"] = json.dumps(_redact(observations), ensure_ascii=False, default=str)
+    return result
+
+
+def _message_contents(values: Any, message_types: set[str]) -> list[str]:
+    result: list[str] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            message_type = str(value.get("type", "")).lower()
+            role = str(value.get("role", "")).lower()
+            content = value.get("content")
+            if (message_type in message_types or role in message_types) and isinstance(content, str) and content.strip():
+                result.append(content.strip())
+            for item in value.values():
+                collect(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                collect(item)
+
+    collect(values)
+    return result
+
+
+def _goal_preview(task_snapshot: Any, metadata: dict[str, Any]) -> str:
+    human_messages: list[str] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            message_type = str(value.get("type", "")).lower()
+            role = str(value.get("role", "")).lower()
+            content = value.get("content")
+            if (message_type in {"human", "user"} or role == "user") and isinstance(content, str) and content.strip():
+                human_messages.append(content.strip())
+            for item in value.values():
+                collect(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                collect(item)
+
+    collect(task_snapshot)
+    if human_messages:
+        return human_messages[-1][:240]
+    if isinstance(task_snapshot, dict):
+        for key in ("goal", "instruction", "summary"):
+            value = task_snapshot.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:240]
+    if isinstance(task_snapshot, str):
+        return task_snapshot.strip()[:240]
+    return str(metadata.get("task_title") or "")[:240]
+
+
+def _trace_session_id(trace: Any) -> str:
+    metadata = _metadata(trace)
+    return str(metadata.get("langfuse_session_id") or _value(trace, "session_id", "") or "")
+
+
+def _trace_goal(trace: Any) -> str:
+    return _goal_preview(_value(trace, "input", _value(trace, "observations", "")), _metadata(trace))
+
+
+def fetch_langfuse_sessions(client: Any, *, limit: int = 100, max_pages: int = 3) -> list[dict[str, Any]]:
+    api = getattr(client, "api", client)
+    sessions_api = getattr(api, "sessions", getattr(api, "session", None))
+    list_sessions = getattr(sessions_api, "list", None)
+    if callable(list_sessions):
+        response = list_sessions(limit=limit, page=1)
+        rows = getattr(response, "data", response)
+        if isinstance(rows, dict):
+            rows = rows.get("data", [])
+        result = []
+        for row in rows or []:
+            session_id = _value(row, "id", _value(row, "session_id", ""))
+            if not session_id:
+                continue
+            result.append({
+                "session_id": str(session_id),
+                "created_at": _value(row, "created_at", _value(row, "timestamp", None)),
+                "trace_count": _value(row, "trace_count", _value(row, "count", None)),
+            })
+        return result
+    traces = fetch_langfuse_traces(client, limit=limit, max_pages=max_pages)
+    grouped: dict[str, list[Any]] = {}
+    for trace in traces:
+        session_id = _trace_session_id(trace)
+        if session_id:
+            grouped.setdefault(session_id, []).append(trace)
+    result = [{"session_id": session_id, "created_at": _value(max(rows, key=lambda item: str(_value(item, "timestamp", _value(item, "created_at", "")))), "timestamp", _value(rows[-1], "created_at", None)), "trace_count": len(rows), "preview": _trace_goal(rows[0])} for session_id, rows in grouped.items()]
+    result.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    return result

@@ -109,6 +109,18 @@ async def mem_evolution_skilllearnbench_families():
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@router.get("/mem/evolution/langfuse/sessions")
+async def list_mem_evolution_langfuse_sessions(agent_id: str = Query("main")):
+    try:
+        import asyncio
+        from evaluation.langfuse_export import _build_client
+        from evaluation.langfuse_exporter import fetch_langfuse_sessions
+        return {"ok": True, "sessions": await asyncio.to_thread(fetch_langfuse_sessions, _build_client())}
+    except Exception as exc:
+        logger.warning("mem_evolution_langfuse_sessions error: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @router.get("/mem/evolution/tasks/{task_id}")
 async def mem_evolution_task(task_id: str, agent_id: str = Query("main")):
     task = _evolution_workflow.get(task_id, agent_id)
@@ -212,13 +224,44 @@ async def list_mem_evolution_traces(
         import asyncio
 
         filters = {key: value for key, value in {"session_id": session_id, "name": name}.items() if value}
+        client = _build_client()
         rows = await asyncio.to_thread(
-            fetch_langfuse_traces, _build_client(), limit=limit, max_pages=page, **filters,
+            fetch_langfuse_traces, client, limit=limit, max_pages=page, **filters,
         )
         page_rows = rows[(page - 1) * limit:page * limit]
-        return {"ok": True, "traces": [trace_preview(row) for row in page_rows], "page": page, "has_more": len(rows) >= page * limit}
+        trace_api = getattr(getattr(client, "api", client), "trace", None)
+        detailed_rows = await asyncio.gather(*(
+            asyncio.to_thread(trace_api.get, str(getattr(row, "id", "")))
+            for row in page_rows
+        ))
+        return {"ok": True, "traces": [trace_preview(row) for row in detailed_rows], "page": page, "has_more": len(rows) >= page * limit}
     except Exception as exc:
         logger.warning("mem_evolution_traces error: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/mem/evolution/tasks/{task_id}/traces/{trace_id}")
+async def get_mem_evolution_trace(
+    task_id: str,
+    trace_id: str,
+    agent_id: str = Query("main"),
+):
+    task = _evolution_workflow.get(task_id, agent_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="evolution task not found")
+    if task["stage"] != "created" or task.get("data_source", "langfuse") != "langfuse":
+        raise HTTPException(status_code=409, detail="trace detail is only available before export")
+    try:
+        from evaluation.langfuse_export import _build_client
+        from evaluation.langfuse_exporter import trace_preview
+        import asyncio
+
+        client = _build_client()
+        trace_api = getattr(getattr(client, "api", client), "trace", None)
+        trace = await asyncio.to_thread(trace_api.get, trace_id)
+        return {"ok": True, "trace": trace_preview(trace, include_observations=True)}
+    except Exception as exc:
+        logger.warning("mem_evolution_trace_detail error: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 

@@ -11,6 +11,7 @@ from evaluation.langfuse_exporter import (
     export_langfuse_traces,
     export_traces,
     fetch_langfuse_traces,
+    fetch_langfuse_sessions,
     trace_to_sample,
 )
 
@@ -68,6 +69,14 @@ class LangfuseExporterTests(unittest.TestCase):
         self.assertEqual(len(traces), 1)
         self.assertEqual(client.api.trace.calls[0]["session_id"], "session-1")
 
+    def test_fetch_sessions_uses_native_sessions_api(self) -> None:
+        class SessionsApi:
+            def list(self, **kwargs):
+                return {"data": [{"id": "session-1", "created_at": "2026-09-24T00:00:00Z", "trace_count": 3}]}
+
+        client = type("Client", (), {"api": type("Api", (), {"sessions": SessionsApi()})()})()
+        self.assertEqual(fetch_langfuse_sessions(client), [{"session_id": "session-1", "created_at": "2026-09-24T00:00:00Z", "trace_count": 3}])
+
     def test_export_langfuse_traces_writes_fetched_rows(self) -> None:
         class TraceApi:
             def list(self, **kwargs):
@@ -105,6 +114,7 @@ class LangfuseExporterTests(unittest.TestCase):
         self.assertEqual(sample["skill_id"], "skill-1")
         self.assertEqual(len(sample["trajectory"]), 2)
         self.assertEqual(sample["task_snapshot"]["title"], "任务")
+
 
 
 if __name__ == "__main__":

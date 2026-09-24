@@ -32,12 +32,26 @@ type EvolutionTask = {
 type TraceRow = {
   trace_id: string;
   title: string;
+  goal?: string;
   category: string | null;
   session_id: string;
   created_at: string | null;
   input_preview: string;
   output_preview: string;
   skill_names: string[];
+  tool_call_count?: number;
+  user_message?: string;
+  assistant_message?: string;
+  observations_full?: string;
+  trace_ids?: string[];
+  related_trace_count?: number;
+};
+
+type LangfuseSession = {
+  session_id: string;
+  created_at?: string | null;
+  trace_count?: number | null;
+  preview?: string;
 };
 
 const PHASES = [
@@ -159,7 +173,9 @@ function DataStage({ task, agentId, onChanged }: { task: EvolutionTask; agentId:
   const [rows, setRows] = useState<TraceRow[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [preview, setPreview] = useState<TraceRow | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [sessionId, setSessionId] = useState("");
+  const [sessions, setSessions] = useState<LangfuseSession[]>([]);
   const [name, setName] = useState("");
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
@@ -167,6 +183,18 @@ function DataStage({ task, agentId, onChanged }: { task: EvolutionTask; agentId:
   const [error, setError] = useState("");
   const [families, setFamilies] = useState<any[]>([]);
   const [benchmarkBusy, setBenchmarkBusy] = useState(false);
+  const [taskFamily, setTaskFamily] = useState(task.task_family || "");
+
+  const loadSessions = useCallback(async () => {
+    setLoading(true); setError("");
+    try {
+      const result = await api.memEvolutionLangfuseSessions(agentId);
+      const next = (result.sessions || []) as LangfuseSession[];
+      setSessions(next);
+      setSessionId((current) => current && next.some((row) => row.session_id === current) ? current : "");
+    } catch (loadError) { setError(loadError instanceof Error ? loadError.message : "加载会话失败"); }
+    finally { setLoading(false); }
+  }, [agentId]);
 
   const load = useCallback(async (targetPage = 1) => {
     setLoading(true); setError("");
@@ -177,7 +205,8 @@ function DataStage({ task, agentId, onChanged }: { task: EvolutionTask; agentId:
     finally { setLoading(false); }
   }, [agentId, task.id, sessionId, name]);
 
-  useEffect(() => { if (task.stage === "created" && task.data_source !== "skilllearnbench") void load(1); }, [task.id, task.data_source]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (task.stage === "created" && task.data_source !== "skilllearnbench") void loadSessions(); }, [task.id, task.data_source, task.stage, loadSessions]);
+  useEffect(() => { if (task.stage === "created" && task.data_source !== "skilllearnbench" && sessionId) void load(1); }, [task.id, task.data_source, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (task.data_source === "skilllearnbench") {
       void api.memEvolutionSkillLearnBenchFamilies().then((result) => setFamilies(result.families || [])).catch((e) => setError(e instanceof Error ? e.message : "加载标准任务集失败"));
@@ -192,10 +221,18 @@ function DataStage({ task, agentId, onChanged }: { task: EvolutionTask; agentId:
   };
 
   const exportSelected = async () => {
+    if (!taskFamily.trim()) { setError("请先填写任务族名称"); return; }
     setLoading(true); setError("");
-    try { await api.exportMemEvolutionTask(agentId, task.id, [...selected]); await onChanged(); }
+    try { await api.setMemEvolutionTaskFamily(agentId, task.id, taskFamily.trim()); await api.exportMemEvolutionTask(agentId, task.id, [...selected]); await onChanged(); }
     catch (exportError) { setError(exportError instanceof Error ? exportError.message : "导出失败"); }
     finally { setLoading(false); }
+  };
+
+  const openPreview = async (row: TraceRow) => {
+    setPreview(row); setPreviewLoading(true); setError("");
+    try { const result = await api.memEvolutionTraceDetail(agentId, task.id, row.trace_id); setPreview(result.trace); }
+    catch (previewError) { setError(previewError instanceof Error ? previewError.message : "加载轨迹详情失败"); }
+    finally { setPreviewLoading(false); }
   };
 
   if (task.stage !== "created") return <div className="space-y-4"><div><h3 className="text-sm font-semibold" style={{ color: "var(--text)" }}>数据准备结果</h3><p className="mt-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>{task.data_source === "skilllearnbench" ? "已准备 SkillLearnBench 标准任务实例和种子执行轨迹。" : "只有人工勾选的 Langfuse 轨迹被写入本次进化任务。"}</p></div><ExecutionResult execution={task.execution} /><ArtifactResult task={task} /></div>;
@@ -207,32 +244,32 @@ function DataStage({ task, agentId, onChanged }: { task: EvolutionTask; agentId:
 
   const allChecked = rows.length > 0 && rows.every((row) => selected.has(row.trace_id));
   return (
-    <div className="flex h-full min-h-[480px] min-w-0 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex flex-wrap items-end gap-2 border-b pb-3" style={{ borderColor: "var(--border)" }}>
-        <label className="min-w-[180px] flex-1 text-[10px]" style={{ color: "var(--text-secondary)" }}>会话 ID<input className="input mt-1 w-full text-[11px]" value={sessionId} onChange={(event) => setSessionId(event.target.value)} placeholder="可选" /></label>
+        <label className="min-w-[260px] flex-1 text-[10px]" style={{ color: "var(--text-secondary)" }}>选择会话<select className="input mt-1 w-full text-[11px]" value={sessionId} onChange={(event) => { setSessionId(event.target.value); setRows([]); setSelected(new Set()); setPreview(null); }}><option value="">请选择会话后查看轨迹</option>{sessions.map((row) => <option key={row.session_id} value={row.session_id}>{row.session_id} · {row.trace_count ?? 0} 条 · {timeLabel(row.created_at)}</option>)}</select></label>
         <label className="min-w-[180px] flex-1 text-[10px]" style={{ color: "var(--text-secondary)" }}>轨迹名称<input className="input mt-1 w-full text-[11px]" value={name} onChange={(event) => setName(event.target.value)} placeholder="可选" /></label>
-        <button className="btn-ghost flex items-center gap-1 px-3 py-1.5 text-[11px]" onClick={() => load(1)} disabled={loading} type="button"><Search className="h-3.5 w-3.5" />查询</button>
+        <button className="btn-ghost flex items-center gap-1 px-3 py-1.5 text-[11px]" onClick={() => load(1)} disabled={loading || !sessionId} type="button"><Search className="h-3.5 w-3.5" />查询</button>
       </div>
       {error && <div className="mt-3 flex items-center gap-2 border px-3 py-2 text-[11px]" style={{ borderColor: "var(--error)", color: "var(--error)", background: "var(--error-bg)" }}><AlertCircle className="h-4 w-4" />{error}</div>}
-      <div className="mt-3 grid min-h-0 flex-1 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_320px]">
-        <div className="min-w-0 overflow-hidden border" style={{ borderColor: "var(--border)" }}>
+      <div className="mt-3 grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-hidden xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="flex min-h-0 min-w-0 flex-col overflow-hidden border" style={{ borderColor: "var(--border)" }}>
           <div className="flex items-center justify-between border-b px-3 py-2" style={{ borderColor: "var(--border)", background: "var(--bg-inset)" }}>
-            <label className="flex items-center gap-2 text-[11px]" style={{ color: "var(--text)" }}><input type="checkbox" checked={allChecked} onChange={(event) => setSelected((current) => { const next = new Set(current); rows.forEach((row) => event.target.checked ? next.add(row.trace_id) : next.delete(row.trace_id)); return next; })} />全选当前页</label>
+            <label className="flex items-center gap-2 text-[11px]" style={{ color: "var(--text)" }}><input type="checkbox" checked={allChecked} onChange={(event) => setSelected((current) => { const next = new Set(current); rows.forEach((row) => { if (event.target.checked) next.add(row.trace_id); else next.delete(row.trace_id); }); return next; })} />全选当前页</label>
             <span className="text-[10px]" style={{ color: "var(--accent)" }}>已选 {selected.size} 条</span>
           </div>
-          <div className="max-h-[360px] overflow-auto">
-            {loading && !rows.length ? <div className="flex justify-center py-16"><Loader2 className="h-5 w-5 animate-spin" style={{ color: "var(--accent)" }} /></div> : rows.length === 0 ? <div className="py-16 text-center text-[11px]" style={{ color: "var(--text-tertiary)" }}>没有符合条件的轨迹</div> : (
-              <table className="w-full table-fixed text-left text-[10px]"><thead className="sticky top-0" style={{ background: "var(--bg-elevated)", color: "var(--text-tertiary)" }}><tr><th className="w-9 px-2 py-2"></th><th className="px-2 py-2">任务内容</th><th className="w-24 px-2 py-2">状态</th><th className="w-28 px-2 py-2">时间</th><th className="w-10 px-2 py-2"></th></tr></thead><tbody>{rows.map((row) => <tr key={row.trace_id} className="border-t" style={{ borderColor: "var(--border)" }}><td className="px-2 py-2"><input type="checkbox" checked={selected.has(row.trace_id)} onChange={(event) => setSelected((current) => { const next = new Set(current); event.target.checked ? next.add(row.trace_id) : next.delete(row.trace_id); return next; })} /></td><td className="px-2 py-2"><div className="truncate font-medium" style={{ color: "var(--text)" }}>{row.title || row.input_preview || row.trace_id}</div><div className="mt-0.5 truncate" style={{ color: "var(--text-tertiary)" }}>{row.session_id || row.trace_id}</div></td><td className="px-2 py-2" style={{ color: row.category === "success" ? "var(--success)" : "var(--text-secondary)" }}>{row.category || "未分类"}</td><td className="px-2 py-2" style={{ color: "var(--text-secondary)" }}>{timeLabel(row.created_at)}</td><td className="px-2 py-2"><button className="btn-ghost p-1" onClick={() => setPreview(row)} title="查看轨迹" type="button"><Eye className="h-3.5 w-3.5" /></button></td></tr>)}</tbody></table>
+          <div className="min-h-0 flex-1 overflow-auto">
+            {!sessionId ? <div className="py-16 text-center text-[11px]" style={{ color: "var(--text-tertiary)" }}>请先选择会话</div> : loading && !rows.length ? <div className="flex justify-center py-16"><Loader2 className="h-5 w-5 animate-spin" style={{ color: "var(--accent)" }} /></div> : rows.length === 0 ? <div className="py-16 text-center text-[11px]" style={{ color: "var(--text-tertiary)" }}>没有符合条件的任务轨迹</div> : (
+              <table className="w-full table-fixed text-left text-[10px]"><thead className="sticky top-0" style={{ background: "var(--bg-elevated)", color: "var(--text-tertiary)" }}><tr><th className="w-9 px-2 py-2"></th><th className="px-2 py-2">任务内容</th><th className="w-24 px-2 py-2">状态</th><th className="w-28 px-2 py-2">时间</th><th className="w-10 px-2 py-2"></th></tr></thead><tbody>{rows.map((row) => <tr key={row.trace_id} className="border-t" style={{ borderColor: "var(--border)" }}><td className="px-2 py-2"><input type="checkbox" checked={selected.has(row.trace_id)} onChange={(event) => setSelected((current) => { const next = new Set(current); if (event.target.checked) next.add(row.trace_id); else next.delete(row.trace_id); return next; })} /></td><td className="px-2 py-2"><div className="truncate font-medium" style={{ color: "var(--text)" }}>{row.goal || row.title || row.trace_id}</div><div className="mt-0.5 truncate" style={{ color: "var(--text-tertiary)" }}>{row.related_trace_count && row.related_trace_count > 1 ? `已合并 ${row.related_trace_count} 条调用` : row.session_id || row.trace_id}</div></td><td className="px-2 py-2" style={{ color: row.category === "success" ? "var(--success)" : "var(--text-secondary)" }}>{row.category || "未分类"}</td><td className="px-2 py-2" style={{ color: "var(--text-secondary)" }}>{timeLabel(row.created_at)}</td><td className="px-2 py-2"><button className="btn-ghost p-1" onClick={() => void openPreview(row)} title="查看轨迹" type="button"><Eye className="h-3.5 w-3.5" /></button></td></tr>)}</tbody></table>
             )}
           </div>
           <div className="flex items-center justify-center gap-2 border-t px-3 py-2" style={{ borderColor: "var(--border)" }}><button className="btn-ghost p-1" disabled={page <= 1 || loading} onClick={() => load(page - 1)} type="button"><ChevronLeft className="h-3.5 w-3.5" /></button><span className="text-[10px]" style={{ color: "var(--text-secondary)" }}>第 {page} 页</span><button className="btn-ghost p-1" disabled={!hasMore || loading} onClick={() => load(page + 1)} type="button"><ChevronRight className="h-3.5 w-3.5" /></button></div>
         </div>
-        <div className="min-w-0 border p-3" style={{ borderColor: "var(--border)" }}>
-          <div className="mb-3 text-[11px] font-medium" style={{ color: "var(--text)" }}>轨迹预览</div>
-          {!preview ? <div className="py-16 text-center text-[10px]" style={{ color: "var(--text-tertiary)" }}>点击查看按钮检查输入和输出</div> : <div className="space-y-3 text-[10px]"><div><div className="mb-1" style={{ color: "var(--text-tertiary)" }}>轨迹 ID</div><div className="break-all" style={{ color: "var(--text)" }}>{preview.trace_id}</div></div><div><div className="mb-1" style={{ color: "var(--text-tertiary)" }}>输入</div><pre className="max-h-32 overflow-auto whitespace-pre-wrap border p-2" style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}>{preview.input_preview}</pre></div><div><div className="mb-1" style={{ color: "var(--text-tertiary)" }}>输出</div><pre className="max-h-32 overflow-auto whitespace-pre-wrap border p-2" style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}>{preview.output_preview}</pre></div></div>}
+        <div className="min-h-0 min-w-0 overflow-y-auto border p-3" style={{ borderColor: "var(--border)" }}>
+            <div className="mb-3 text-[11px] font-medium" style={{ color: "var(--text)" }}>任务预览</div>
+          {!preview ? <div className="py-16 text-center text-[10px]" style={{ color: "var(--text-tertiary)" }}>点击查看按钮检查本轮提问和回复</div> : <div className="space-y-3 text-[10px]"><div><div className="mb-1" style={{ color: "var(--text-tertiary)" }}>用户提问</div><pre className="max-h-48 overflow-auto whitespace-pre-wrap border p-2" style={{ borderColor: "var(--border)", color: "var(--text)" }}>{preview.user_message || preview.goal || "未识别用户提问"}</pre></div><div><div className="mb-1" style={{ color: "var(--text-tertiary)" }}>Agent 回复</div><pre className="max-h-64 overflow-auto whitespace-pre-wrap border p-2" style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}>{preview.assistant_message || "未提取到 Agent 回复"}</pre></div><details className="border p-2" style={{ borderColor: "var(--border)" }}><summary className="cursor-pointer" style={{ color: "var(--text-secondary)" }}>查看完整原始 observations</summary><pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap" style={{ color: "var(--text-tertiary)" }}>{previewLoading ? "正在加载完整 observations..." : preview.observations_full || "暂无 observations"}</pre></details><div><div className="mb-1" style={{ color: "var(--text-tertiary)" }}>Trace ID</div><div className="break-all" style={{ color: "var(--text)" }}>{preview.trace_id}</div></div></div>}
         </div>
       </div>
-      <div className="mt-3 flex items-center justify-between border-t pt-3" style={{ borderColor: "var(--border)" }}><span className="text-[10px]" style={{ color: "var(--text-secondary)" }}>导出前请逐项确认内容属于同一任务族</span><button className="btn-primary flex items-center gap-1.5 px-3 py-1.5 text-[11px]" disabled={!selected.size || loading} onClick={exportSelected} type="button">{loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}确认导出 {selected.size} 条</button></div>
+      <div className="mt-3 shrink-0 space-y-2 border p-3" style={{ borderColor: "var(--border)", background: "var(--bg-inset)" }}><div className="flex flex-wrap items-end gap-3"><label className="min-w-0 flex-1 text-[10px]" style={{ color: "var(--text-secondary)" }}>任务族名称<input className="input mt-1 w-full text-[11px]" value={taskFamily} onChange={(event) => setTaskFamily(event.target.value)} placeholder="选择轨迹后填写，例如 temperature-simulation" /></label><button className="btn-primary flex shrink-0 items-center gap-1.5 px-3 py-1.5 text-[11px]" disabled={!selected.size || !taskFamily.trim() || loading} onClick={exportSelected} type="button">{loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}确认导出 {selected.size} 条</button></div><span className="text-[10px]" style={{ color: "var(--text-secondary)" }}>先选择真实业务轨迹，再确认它们属于同一个任务族。</span></div>
     </div>
   );
 }
@@ -336,10 +373,23 @@ export default function SkillEvolutionWorkspace({ agentId }: { agentId: string }
   const activePhase = active ? phaseIndex(active.stage) : 0;
 
   const create = async () => {
-    if (!family.trim()) return;
+    if (dataSource === "skilllearnbench" && !family.trim()) return;
     setCreating(true); setError("");
     try { const result = await api.createMemEvolutionTask(agentId, family.trim(), "", dataSource); if (dataSource === "langfuse") setFamily(""); await load(); setActiveId(result.task.id); }
     catch (createError) { setError(createError instanceof Error ? createError.message : "创建失败"); }
+    finally { setCreating(false); }
+  };
+
+  const chooseDataSource = async (source: "langfuse" | "skilllearnbench") => {
+    setDataSource(source);
+    setFamily(source === "langfuse" ? "" : benchmarkFamilies[0]?.family || "");
+    if (source !== "langfuse") return;
+    setCreating(true); setError("");
+    try {
+      const result = await api.createMemEvolutionTask(agentId, "", "", "langfuse");
+      await load();
+      setActiveId(result.task.id);
+    } catch (createError) { setError(createError instanceof Error ? createError.message : "创建 Langfuse 选择任务失败"); }
     finally { setCreating(false); }
   };
 
@@ -348,18 +398,25 @@ export default function SkillEvolutionWorkspace({ agentId }: { agentId: string }
     try { await api.updateMemEvolutionStage(agentId, active.id, "abandoned", "用户在工作台放弃本次进化"); await load(); }
     catch (abandonError) { setError(abandonError instanceof Error ? abandonError.message : "操作失败"); }
   };
+  const removeAbandoned = async () => {
+    if (!active || active.stage !== "abandoned") return;
+    if (!window.confirm("删除这个放弃的进化任务及其报告、日志和 Candidate 文件？")) return;
+    try { await api.deleteMemEvolutionTask(agentId, active.id); await load(); }
+    catch (removeError) { setError(removeError instanceof Error ? removeError.message : "删除失败"); }
+  };
 
   const content = !active ? <div className="flex h-full items-center justify-center text-xs" style={{ color: "var(--text-tertiary)" }}>新建或选择一个进化任务</div> : activePhase === 0 ? <DataStage task={active} agentId={agentId} onChanged={load} /> : activePhase === 1 ? <DatasetStage task={active} agentId={agentId} onChanged={load} /> : activePhase === 2 ? <CandidateStage task={active} agentId={agentId} onChanged={load} /> : activePhase === 3 ? <DevStage task={active} agentId={agentId} onChanged={load} /> : activePhase === 4 ? <RevisionStage task={active} agentId={agentId} onChanged={load} /> : activePhase === 5 ? <ValidationStage task={active} agentId={agentId} split="regression" onChanged={load} /> : active.stage === "holdout_verified" || active.stage === "approved" || active.stage === "published" ? <ReleaseStage task={active} agentId={agentId} onChanged={load} /> : <ValidationStage task={active} agentId={agentId} split="holdout" onChanged={load} />;
 
   return (
     <div className="grid h-full min-h-0 w-full grid-cols-1 overflow-hidden border lg:grid-cols-[240px_minmax(0,1fr)]" style={{ borderColor: "var(--border)" }}>
       <aside className="flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r" style={{ borderColor: "var(--border)", background: "var(--bg-inset)" }}>
-        <div className="border-b p-3" style={{ borderColor: "var(--border)" }}><div className="mb-2 flex items-center justify-between"><span className="text-[11px] font-semibold" style={{ color: "var(--text)" }}>进化任务</span><button className="btn-ghost p-1" onClick={load} title="刷新" type="button"><RefreshCw className="h-3.5 w-3.5" /></button></div><div className="space-y-1.5"><select className="input w-full text-[10px]" value={dataSource} onChange={(event) => { const source = event.target.value as "langfuse" | "skilllearnbench"; setDataSource(source); setFamily(source === "langfuse" ? "" : benchmarkFamilies[0]?.family || ""); }}><option value="skilllearnbench">SkillLearnBench 标准任务</option><option value="langfuse">Langfuse 真实轨迹</option></select><div className="flex gap-1">{dataSource === "skilllearnbench" ? <select className="input min-w-0 flex-1 text-[10px]" value={family} onChange={(event) => setFamily(event.target.value)}>{benchmarkFamilies.map((row) => <option key={row.family} value={row.family}>{row.family}</option>)}</select> : <input className="input min-w-0 flex-1 text-[10px]" value={family} onChange={(event) => setFamily(event.target.value)} placeholder="任务族名称" />}<button className="btn-primary p-1.5" disabled={creating || !family.trim()} onClick={create} title="新建进化任务" type="button">{creating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}</button></div></div></div>
+        <div className="border-b p-3" style={{ borderColor: "var(--border)" }}><div className="mb-2 flex items-center justify-between"><span className="text-[11px] font-semibold" style={{ color: "var(--text)" }}>进化任务</span><button className="btn-ghost p-1" onClick={load} title="刷新" type="button"><RefreshCw className="h-3.5 h-3.5" /></button></div><div className="space-y-1.5"><select className="input w-full text-[10px]" value={dataSource} onChange={(event) => void chooseDataSource(event.target.value as "langfuse" | "skilllearnbench")}><option value="skilllearnbench">SkillLearnBench 标准任务</option><option value="langfuse">Langfuse 真实轨迹</option></select><div className="flex gap-1">{dataSource === "skilllearnbench" ? <select className="input min-w-0 flex-1 text-[10px]" value={family} onChange={(event) => setFamily(event.target.value)}>{benchmarkFamilies.map((row) => <option key={row.family} value={row.family}>{row.family}</option>)}</select> : <div className="input min-w-0 flex-1 text-[10px]" style={{ color: "var(--text-secondary)" }}>选择 Langfuse 后直接进入会话选择</div>}<button className="btn-primary p-1.5" disabled={creating || dataSource === "langfuse" || !family.trim()} onClick={create} title="新建进化任务" type="button">{creating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}</button></div></div></div>
         <div className="max-h-40 overflow-y-auto lg:max-h-none lg:flex-1">{loading ? <div className="flex justify-center py-8"><Loader2 className="h-4 w-4 animate-spin" /></div> : tasks.map((task) => <button key={task.id} className="w-full border-b px-3 py-3 text-left transition-colors" style={{ borderColor: "var(--border)", background: task.id === activeId ? "var(--active)" : "transparent" }} onClick={() => setActiveId(task.id)} type="button"><div className="truncate text-[11px] font-medium" style={{ color: "var(--text)" }}>{task.title}</div><div className="mt-1 flex items-center justify-between text-[9px]"><span style={{ color: task.stage === "abandoned" ? "var(--error)" : "var(--accent)" }}>{STAGE_LABELS[task.stage] || task.stage}</span><span style={{ color: "var(--text-tertiary)" }}>{timeLabel(task.updated_at)}</span></div></button>)}</div>
       </aside>
       <section className="flex min-h-0 min-w-0 flex-col bg-[var(--bg-elevated)]">
         {active && <><header className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: "var(--border)" }}><div className="min-w-0"><div className="truncate text-sm font-semibold" style={{ color: "var(--text)" }}>{active.title}</div><div className="mt-0.5 text-[10px]" style={{ color: "var(--text-secondary)" }}>{active.task_family} · {active.data_source === "skilllearnbench" ? "SkillLearnBench" : "Langfuse"} · {STAGE_LABELS[active.stage] || active.stage}</div></div>{active.stage !== "published" && active.stage !== "abandoned" && <button className="btn-ghost px-2 py-1 text-[10px]" style={{ color: "var(--error)" }} onClick={abandon} type="button">放弃本次进化</button>}</header><nav className="grid grid-cols-4 border-b xl:grid-cols-7" style={{ borderColor: "var(--border)" }}>{PHASES.map((phase, index) => { const Icon = phase.icon; const done = index < activePhase; const current = index === activePhase; return <div key={phase.key} className="flex min-w-0 items-center gap-2 border-r px-2 py-2" style={{ borderColor: "var(--border)", background: current ? "var(--accent-bg)" : "transparent", color: done || current ? "var(--accent)" : "var(--text-tertiary)" }}>{done ? <CheckCircle2 className="h-3.5 w-3.5 flex-shrink-0" /> : <Icon className="h-3.5 w-3.5 flex-shrink-0" />}<span className="truncate text-[10px] font-medium">{phase.label}</span></div>; })}</nav></>}
         {error && <div className="m-4 border px-3 py-2 text-[11px]" style={{ borderColor: "var(--error)", color: "var(--error)", background: "var(--error-bg)" }}>{error}</div>}
+        {active?.stage === "abandoned" && <div className="border-b px-4 py-2 text-right" style={{ borderColor: "var(--border)" }}><button className="btn-ghost px-2 py-1 text-[10px]" style={{ color: "var(--error)" }} onClick={removeAbandoned} type="button">删除放弃任务</button></div>}
         <main className="min-h-0 flex-1 overflow-auto p-4">{content}</main>
       </section>
     </div>
