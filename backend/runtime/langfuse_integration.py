@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,10 @@ def build_langfuse_config(*, request: Any, run_id: str) -> dict[str, Any]:
     Observability is deliberately best-effort: missing credentials or an
     unavailable SDK must never prevent the agent turn from running.
     """
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+    if not os.getenv("LANGFUSE_HOST") and os.getenv("LANGFUSE_BASE_URL"):
+        os.environ["LANGFUSE_HOST"] = os.environ["LANGFUSE_BASE_URL"]
+
     metadata = {
             "pipixia_run_id": run_id,
             "memory_turn_id": run_id,
