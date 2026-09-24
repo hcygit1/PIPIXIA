@@ -38,7 +38,7 @@ class BoundaryReviewResolution(BaseModel):
 
 
 class EvolutionTaskCreate(BaseModel):
-    task_family: str
+    task_family: str = ""
     title: str = ""
     data_source: Literal["langfuse", "skilllearnbench"] = "langfuse"
 
@@ -66,6 +66,8 @@ async def mem_evolution_tasks(agent_id: str = Query("main")):
 async def create_mem_evolution_task(
     request: EvolutionTaskCreate, agent_id: str = Query("main"),
 ):
+    if request.data_source == "skilllearnbench" and not request.task_family.strip():
+        raise HTTPException(status_code=422, detail="SkillLearnBench 任务族不能为空")
     if request.data_source == "skilllearnbench":
         from evaluation.skilllearnbench_dataset_importer import list_families
         available = {row["family"] for row in list_families()}
@@ -75,6 +77,27 @@ async def create_mem_evolution_task(
         agent_id=agent_id, task_family=request.task_family, title=request.title,
         data_source=request.data_source,
     )}
+
+
+@router.post("/mem/evolution/tasks/{task_id}/family")
+async def set_mem_evolution_task_family(task_id: str, task_family: str, agent_id: str = Query("main")):
+    try:
+        return {"ok": True, "task": _evolution_workflow.set_task_family(task_id, agent_id=agent_id, task_family=task_family)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="evolution task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete("/mem/evolution/tasks/{task_id}")
+async def delete_mem_evolution_task(task_id: str, agent_id: str = Query("main")):
+    try:
+        _evolution_workflow.delete(task_id, agent_id=agent_id)
+        return {"ok": True, "task_id": task_id}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="evolution task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/mem/evolution/skilllearnbench/families")

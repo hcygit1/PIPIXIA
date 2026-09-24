@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import uuid
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -75,6 +76,34 @@ class SkillEvolutionWorkflow:
 
     def get(self, task_id: str, agent_id: str = "main") -> dict[str, Any] | None:
         return next((item for item in self.list(agent_id) if item["id"] == task_id), None)
+
+    def set_task_family(self, task_id: str, *, agent_id: str, task_family: str) -> dict[str, Any]:
+        with self._lock:
+            items = self._read()
+            item = next((row for row in items if row["id"] == task_id and row.get("agent_id") == agent_id), None)
+            if item is None:
+                raise KeyError(task_id)
+            value = task_family.strip()
+            if not value:
+                raise ValueError("task_family is required")
+            item["task_family"] = value
+            item["title"] = f"{value} Skill 进化"
+            item["updated_at"] = _now()
+            self._write(items)
+            return item
+
+    def delete(self, task_id: str, *, agent_id: str = "main") -> None:
+        with self._lock:
+            items = self._read()
+            item = next((row for row in items if row["id"] == task_id and row.get("agent_id") == agent_id), None)
+            if item is None:
+                raise KeyError(task_id)
+            if item.get("stage") != "abandoned":
+                raise ValueError("only abandoned tasks can be deleted")
+            root = self.root / task_id
+            if root.exists():
+                shutil.rmtree(root)
+            self._write([row for row in items if row.get("id") != task_id])
 
     def create(
         self, *, agent_id: str, task_family: str, title: str = "",
