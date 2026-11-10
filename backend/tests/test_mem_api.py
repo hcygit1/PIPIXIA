@@ -3,9 +3,9 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -16,6 +16,8 @@ if str(BACKEND_DIR) not in sys.path:
 from api.dependencies import get_agent_manager
 from api.mem_api import (
     BoundaryReviewResolution,
+    EvolutionTaskCreate,
+    create_mem_evolution_task,
     mem_boundary_reviews,
     mem_memories,
     mem_skills,
@@ -154,6 +156,35 @@ class MemoryApiTests(unittest.IsolatedAsyncioTestCase):
         processor.resolve_boundary_review.assert_awaited_once_with(
             "review-1", action="create_new", target_task_id=None, note="主题不同",
         )
+
+
+class SkillLearnBenchTaskCreationTests(unittest.IsolatedAsyncioTestCase):
+    """数据集清单不可用时，创建任务应返回 502 而不是冒泡成 500。"""
+
+    LIST_FAMILIES = "evaluation.skilllearnbench_dataset_importer.list_families"
+
+    async def test_missing_manifest_returns_502(self) -> None:
+        request = EvolutionTaskCreate(data_source="skilllearnbench", task_family="demo")
+        with patch(self.LIST_FAMILIES, side_effect=FileNotFoundError("清单不存在")):
+            with self.assertRaises(HTTPException) as ctx:
+                await create_mem_evolution_task(request, agent_id="main")
+        self.assertEqual(ctx.exception.status_code, 502)
+        self.assertIn("数据集清单不可用", str(ctx.exception.detail))
+
+    async def test_corrupt_manifest_returns_502(self) -> None:
+        request = EvolutionTaskCreate(data_source="skilllearnbench", task_family="demo")
+        with patch(self.LIST_FAMILIES, side_effect=ValueError("Expecting value")):
+            with self.assertRaises(HTTPException) as ctx:
+                await create_mem_evolution_task(request, agent_id="main")
+        self.assertEqual(ctx.exception.status_code, 502)
+
+    async def test_unknown_family_still_returns_422(self) -> None:
+        request = EvolutionTaskCreate(data_source="skilllearnbench", task_family="missing")
+        with patch(self.LIST_FAMILIES, return_value=[{"family": "demo"}]):
+            with self.assertRaises(HTTPException) as ctx:
+                await create_mem_evolution_task(request, agent_id="main")
+        self.assertEqual(ctx.exception.status_code, 422)
+        self.assertIn("任务族不存在", str(ctx.exception.detail))
 
 
 if __name__ == "__main__":

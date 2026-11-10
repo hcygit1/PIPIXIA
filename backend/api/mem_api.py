@@ -70,7 +70,15 @@ async def create_mem_evolution_task(
         raise HTTPException(status_code=422, detail="SkillLearnBench 任务族不能为空")
     if request.data_source == "skilllearnbench":
         from evaluation.skilllearnbench_dataset_importer import list_families
-        available = {row["family"] for row in list_families()}
+        try:
+            available = {row["family"] for row in list_families()}
+        except (OSError, ValueError) as exc:
+            # 清单缺失、benchmark_root 失效或 JSON 损坏都属于上游数据集不可用，
+            # 与 GET /mem/evolution/skilllearnbench/families 保持一致的 502 语义。
+            raise HTTPException(
+                status_code=502,
+                detail=f"SkillLearnBench 数据集清单不可用: {exc}",
+            ) from exc
         if request.task_family not in available:
             raise HTTPException(status_code=422, detail="SkillLearnBench 任务族不存在")
     return {"ok": True, "task": _evolution_workflow.create(
