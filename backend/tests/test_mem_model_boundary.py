@@ -74,6 +74,8 @@ class MemoryModelBoundaryTests(unittest.TestCase):
                 "kind",
                 "summary",
                 "task_id",
+                "parent_task_id",
+                "source_type",
                 "skill_id",
                 "owner",
                 "content_hash",

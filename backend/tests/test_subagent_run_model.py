@@ -64,6 +64,7 @@ class SubagentRunModelTests(unittest.TestCase):
                 "task",
                 "label",
                 "model",
+                "parent_task_id",
                 "cleanup",
                 "spawn_depth",
                 "created_at",

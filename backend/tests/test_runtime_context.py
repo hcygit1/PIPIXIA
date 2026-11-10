@@ -186,6 +186,17 @@ class CompactionLevelTests(unittest.TestCase):
 
 
 class AgentOverflowRetryTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        # 这些用例只关心溢出重试逻辑，不关心模型解析。真实环境里
+        # config.json 被 gitignore，CI 上不存在，resolve_default_model_ref
+        # 会直接抛 "未配置可用模型"，导致用例在准备 prompt 阶段就失败。
+        patcher = patch(
+            "runtime.agent.AgentManager.get_current_model_ref",
+            return_value="fake/model",
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     async def test_astream_does_not_retry_after_partial_output(
         self,
     ) -> None:
@@ -299,6 +310,16 @@ class AgentOverflowRetryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AgentSessionSummaryInjectionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        # 同 AgentOverflowRetryTests：不依赖真实模型配置，否则无 config.json 的
+        # 环境（CI）会在构建 prompt 时因 "未配置可用模型" 报错。
+        patcher = patch(
+            "runtime.agent.AgentManager.get_current_model_ref",
+            return_value="fake/model",
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     async def test_astream_injects_session_summary_before_model_call(self) -> None:
         manager = AgentManager()
         captured = {"messages": None}
