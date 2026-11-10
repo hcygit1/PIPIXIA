@@ -446,6 +446,9 @@ class MemRecallConfig(BaseModel):
     skill_budget_chars: int = 2000
     min_task_score: float = 0.015
     rrf_k: int = 60
+    rerank_enabled: bool = False
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_device: str = "cpu"
     recency_half_life_days: float = 14
     min_inject_score: float = 0.015
 
