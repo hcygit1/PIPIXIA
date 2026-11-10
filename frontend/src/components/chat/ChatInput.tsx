@@ -64,6 +64,10 @@ export default function ChatInput() {
   const [text, setText] = useState("");
   const [showCommands, setShowCommands] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // 选中命令后会把焦点交回输入框，此时文本以 "/" 开头，
+  // onFocus 会误判为用户正在输入斜杠，导致面板立即重新弹出挡住输入框。
+  // 用一个一次性标记跳过这次由代码触发的 focus。
+  const skipFocusOpen = useRef(false);
   const commands = useMemo(() => ([
     { cmd: "/new", desc: t.cmdNewDesc },
     { cmd: "/reset", desc: t.cmdResetDesc },
@@ -115,6 +119,7 @@ export default function ChatInput() {
   const selectCommand = (cmd: string) => {
     setText(cmd);
     setShowCommands(false);
+    skipFocusOpen.current = true;
     textareaRef.current?.focus();
   };
 
@@ -164,7 +169,13 @@ export default function ChatInput() {
               value={text}
               onChange={handleInput}
               onKeyDown={handleKeyDown}
-              onFocus={() => { if (text.startsWith("/")) setShowCommands(true); }}
+              onFocus={() => {
+                if (skipFocusOpen.current) {
+                  skipFocusOpen.current = false;
+                  return;
+                }
+                if (text.startsWith("/")) setShowCommands(true);
+              }}
               onBlur={() => setTimeout(() => setShowCommands(false), 200)}
               placeholder={t.inputPlaceholder}
               rows={1}

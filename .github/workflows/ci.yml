@@ -17,6 +17,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    # Tests import from backend/ as the module root (import runtime / mem / evaluation ...).
+    # Without this, running discover from the repo root raises ModuleNotFoundError.
+    env:
+      PYTHONPATH: backend
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -62,7 +67,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests
+      - name: Run unit and component tests
+        run: npm run test:unit
+
+      - name: Run integration tests
         run: npm test
 
       - name: Check types
