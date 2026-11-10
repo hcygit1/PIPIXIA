@@ -34,9 +34,12 @@ backend/data/**/*.db
 backend/data/**/*.db-wal
 backend/data/**/*.db-shm
 backend/data/**/skills-store/
+# SkillLearnBench dataset manifest is generated per machine (absolute benchmark_root)
+backend/data/evaluation/skilllearnbench/manifest.json
 
 # Project analysis docs (local development only)
 docs-analysis/
+docs/
 /skills/
 .planning/
 项目学习.md
